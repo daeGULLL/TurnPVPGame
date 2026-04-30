@@ -1,0 +1,17 @@
+com\magefight\content\progress\CharacterLevelCalculator.class
+com\magefight\content\progress\SkillPointCalculator.class
+com\magefight\content\factory\skill\MageSkillTreeFactory.class
+com\magefight\content\model\SkillSpec.class
+com\magefight\content\factory\character\MageCharacterFactory.class
+com\magefight\content\model\MageArchetype.class
+com\magefight\content\factory\GamePresetFactory.class
+com\magefight\content\model\MageSkillTree.class
+com\magefight\content\progress\MageProgress.class
+com\magefight\content\model\SkillTreeLink.class
+com\magefight\content\progress\SkillTierResolver.class
+com\magefight\content\factory\skill\SkillFactory.class
+com\magefight\content\progress\ArchetypeUnlockService.class
+com\magefight\content\factory\character\MageCharacterFactoryProvider.class
+com\magefight\content\model\FighterSpec.class
+com\magefight\content\model\SkillTreeBranch.class
+com\magefight\content\model\SkillTreeNode.class

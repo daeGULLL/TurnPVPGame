@@ -1,0 +1,17 @@
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\factory\character\MageCharacterFactory.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\factory\character\MageCharacterFactoryProvider.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\factory\GamePresetFactory.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\factory\skill\MageSkillTreeFactory.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\factory\skill\SkillFactory.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\FighterSpec.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\MageArchetype.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\MageSkillTree.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\SkillSpec.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\SkillTreeBranch.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\SkillTreeLink.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\model\SkillTreeNode.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\progress\ArchetypeUnlockService.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\progress\CharacterLevelCalculator.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\progress\MageProgress.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\progress\SkillPointCalculator.java
+C:\Users\cathy\workspace\MageFight\magefight-content\src\main\java\com\magefight\content\progress\SkillTierResolver.java
