@@ -102,19 +102,23 @@ public final class MageSkillTreeFactory {
     }
 
     private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns) {
-                return skill(name, baseDamage, cooldownTurns, SkillEffect.AreaType.STATIC, 1);
-        }
+        return skill(name, baseDamage, cooldownTurns, 1, 1, SkillEffect.AreaType.STATIC, 1);
+    }
 
-        private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns, SkillEffect.AreaType areaType, int areaRadius) {
+    private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns, SkillEffect.AreaType areaType, int areaRadius) {
+        return skill(name, baseDamage, cooldownTurns, 1, 1, areaType, areaRadius);
+    }
+
+    private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns, int failEnergyCost, int successEnergyCost, SkillEffect.AreaType areaType, int areaRadius) {
         return new SkillTemplate(
                 name,
                 baseDamage,
                 cooldownTurns,
                 1.0,
+                failEnergyCost,
+                successEnergyCost,
                 0,
-                0,
-                0,
-                                new SkillEffect(areaType, areaRadius, 0),
+                new SkillEffect(areaType, areaRadius, 0),
                 List.of()
         );
     }

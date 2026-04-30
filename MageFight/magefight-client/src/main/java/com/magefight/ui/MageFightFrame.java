@@ -294,7 +294,7 @@ public class MageFightFrame extends JFrame {
         if (!validateMyTurn()) {
             return;
         }
-        int damage = 8 + playerSpec.attackBonus();
+        int damage = 5 + playerSpec.attackBonus();
         executeAction(new AttackAction(PLAYER_ID, BOT_ID, damage), "Player uses Attack for " + damage + " dmg.");
     }
 
@@ -404,7 +404,7 @@ public class MageFightFrame extends JFrame {
             executeAction(new UseSkillAction(BOT_ID, PLAYER_ID, availableSkill.name(), skillDamage),
                     "Bot casts " + availableSkill.name() + " for " + skillDamage + " dmg.");
         } else if (roll < 90) {
-            int damage = 8 + botSpec.attackBonus();
+            int damage = 5 + botSpec.attackBonus();
             executeAction(new AttackAction(BOT_ID, PLAYER_ID, damage), "Bot attacks for " + damage + " dmg.");
         } else {
             if (!tryMoveToward(BOT_ID, PLAYER_ID, "Bot") && availableSkill != null) {
@@ -575,6 +575,7 @@ public class MageFightFrame extends JFrame {
         log("Map: " + combatMap.name() + " - " + combatMap.description());
         refreshArchetypeUi();
         refreshUi();
+        scheduleBotTurn();
     }
 
     private boolean tryMoveToward(String actorId, String targetId, String actorLabel) {
@@ -590,8 +591,12 @@ public class MageFightFrame extends JFrame {
                     };
 
                     for (int[] d : deltas) {
-                        int nextCol = actorPos.col() + d[0];
-                        int nextRow = actorPos.row() + d[1];
+                        MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+                        int nextCol = projectedPos.col() + d[0];
+                        int nextRow = projectedPos.row() + d[1];
+                        if (nextCol == projectedPos.col() && nextRow == projectedPos.row()) {
+                            continue;
+                        }
                         if (!session.isInsideMap(nextCol, nextRow)) {
                             continue;
                         }
@@ -609,8 +614,9 @@ public class MageFightFrame extends JFrame {
 
     private boolean tryMoveInDirection(String actorId, MoveDirection direction, String actorLabel) {
         return session.getPlayerPosition(actorId).map(actorPos -> {
-            int nextCol = actorPos.col() + direction.deltaCol;
-            int nextRow = actorPos.row() + direction.deltaRow;
+            MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+            int nextCol = projectedPos.col() + direction.deltaCol;
+            int nextRow = projectedPos.row() + direction.deltaRow;
             if (!session.isInsideMap(nextCol, nextRow)) {
                 return false;
             }

@@ -72,10 +72,6 @@ public class BasicRuleSet implements RuleSet {
                 return false;
             }
 
-            if (!isWithinSkillRange(skillTemplate.get(), actorPos.get(), targetPos.get())) {
-                return false;
-            }
-
             // 에너지 검사
             PlayerState actor = session.getPlayerState(skill.actorId());
             int requiredEnergy = skillTemplate.get().failEnergyCost();
@@ -101,7 +97,8 @@ public class BasicRuleSet implements RuleSet {
             }
 
             Optional<MapCellPosition> currentPos = session.getPlayerPosition(move.actorId());
-            if (currentPos.isEmpty()) {
+            Optional<MapCellPosition> projectedPos = session.getProjectedPlayerPosition(move.actorId());
+            if (currentPos.isEmpty() || projectedPos.isEmpty()) {
                 return false;
             }
 
@@ -117,8 +114,8 @@ public class BasicRuleSet implements RuleSet {
             }
 
             if (!actor.canReachCell(
-                    currentPos.get().col(),
-                    currentPos.get().row(),
+                    projectedPos.get().col(),
+                    projectedPos.get().row(),
                     move.targetCol(),
                     move.targetRow())) {
                 return false;
@@ -137,7 +134,6 @@ public class BasicRuleSet implements RuleSet {
             PlayerState target = session.getPlayerState(attack.targetId());
             target.takeDamage(attack.damage());
             actor.drainEnergy(ATTACK_ENERGY_COST);
-            actor.recordEnergySpentInWindow(ATTACK_ENERGY_COST);
             actor.clearDefense();
             target.clearDefense();
             return;
@@ -146,7 +142,6 @@ public class BasicRuleSet implements RuleSet {
         if (action instanceof DefendAction defend) {
             PlayerState actor = session.getPlayerState(defend.actorId());
             actor.drainEnergy(DEFEND_ENERGY_COST);
-            actor.recordEnergySpentInWindow(DEFEND_ENERGY_COST);
             actor.setDefense(
                     new DefenseState(defend.actorId(), defend.evadeSkillName(), defend.evadeStartTimeMs())
             );
@@ -164,16 +159,17 @@ public class BasicRuleSet implements RuleSet {
 
                 Optional<MapCellPosition> actorPos = session.getPlayerPosition(skill.actorId());
                 Optional<MapCellPosition> targetPos = session.getPlayerPosition(skill.targetId());
-                if (actorPos.isEmpty() || targetPos.isEmpty() || !isWithinSkillRange(template, actorPos.get(), targetPos.get())) {
+                if (actorPos.isEmpty() || targetPos.isEmpty()) {
                     actor.drainEnergy(template.failEnergyCost());
-                    actor.recordEnergySpentInWindow(template.failEnergyCost());
                     actor.clearDefense();
                     target.clearDefense();
                     return;
                 }
                 
-                // 성공확률 평가 후 데미지 적용
-                boolean success = SkillResolver.resolveSuccess(template, actor);
+                boolean inRange = isWithinSkillRange(template, actorPos.get(), targetPos.get());
+
+                // 사거리 안에서만 실제 피해가 적용됨
+                boolean success = inRange && SkillResolver.resolveSuccess(template, actor);
                 if (success) {
                     int resolvedDamage = DamageResolver.calculateFinalDamage(template, skill.damage(), target, session);
                     target.takeDamage(resolvedDamage);
@@ -182,14 +178,12 @@ public class BasicRuleSet implements RuleSet {
                 // 에너지 소모
                 int energyCost = SkillResolver.calculateEnergyCost(template, success);
                 actor.drainEnergy(energyCost);
-                actor.recordEnergySpentInWindow(energyCost);
                 
                 // 숙련도 경험치 획득
                 SkillResolver.awardMasteryExperience(template, actor, success);
             } else {
                 // 스킬 템플릿을 찾을 수 없으면 기본 에너지만 소모
                 actor.drainEnergy(10);
-                actor.recordEnergySpentInWindow(10);
             }
             
             actor.clearDefense();
@@ -206,7 +200,6 @@ public class BasicRuleSet implements RuleSet {
                 session.movePlayer(move.actorId(), move.targetCol(), move.targetRow(), move.requestedAtMs());
             }
             actor.drainEnergy(MOVE_ENERGY_COST);
-            actor.recordEnergySpentInWindow(MOVE_ENERGY_COST);
             actor.clearDefense();
         }
     }
