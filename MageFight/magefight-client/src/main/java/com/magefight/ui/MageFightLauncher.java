@@ -40,6 +40,7 @@ public class MageFightLauncher extends JFrame {
 
     private String accountId;
     private MageProgress progress = MageProgress.starter();
+    private GameNetworkClient networkClient;
 
     public MageFightLauncher() {
         super("MageFight - Login");
@@ -50,6 +51,7 @@ public class MageFightLauncher extends JFrame {
 
         buildLoginCard();
         buildLobbyCard();
+        buildOnlineMatchCard();
 
         setContentPane(cardPanel);
         showLogin();
@@ -110,12 +112,15 @@ public class MageFightLauncher extends JFrame {
         JPanel selection = new JPanel();
         selection.setBorder(BorderFactory.createTitledBorder("Select Current Title"));
         JButton refreshBtn = new JButton("Refresh");
-        JButton startBtn = new JButton("Start Battle");
+        JButton startBtn = new JButton("Start Battle (Local)");
+        JButton onlineBtn = new JButton("Find Online Match");
         refreshBtn.addActionListener(e -> refreshLobby());
         startBtn.addActionListener(e -> startBattle());
+        onlineBtn.addActionListener(e -> showOnlineMatchCard());
         selection.add(archetypeCombo);
         selection.add(refreshBtn);
         selection.add(startBtn);
+        selection.add(onlineBtn);
 
         panel.add(info, BorderLayout.CENTER);
         panel.add(selection, BorderLayout.SOUTH);
@@ -282,5 +287,55 @@ public class MageFightLauncher extends JFrame {
         setVisible(true);
         toFront();
         requestFocus();
+    }
+
+    private void buildOnlineMatchCard() {
+        networkClient = new GameNetworkClient();
+        LobbyPanel lobbyPanel = new LobbyPanel(networkClient, () -> startOnlineGame());
+        cardPanel.add(lobbyPanel, "onlineMatch");
+    }
+
+    private void showOnlineMatchCard() {
+        cards.show(cardPanel, "onlineMatch");
+    }
+
+    private void startOnlineGame() {
+        MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
+        if (selected == null) {
+            selected = progress.selectedArchetype();
+        }
+        if (selected == null) {
+            JOptionPane.showMessageDialog(this, "No archetype selected", "MageFight", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        // 온라인 게임 시작
+        MageFightFrame frame = new MageFightFrame(progress, accountId, p -> accountStore.saveProgress(accountId,
+                AccountStore.AccountProgressSnapshot.fromFields(
+                        p.wins(),
+                        p.selectedArchetype() == null ? null : p.selectedArchetype().name(),
+                        p.skillMasteryLevels(),
+                        p.skillPracticePoints(),
+                        p.inspirationPoints()
+                )), networkClient);
+        frame.setVisible(true);
+        setVisible(false);
+        frame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override
+            public void windowClosed(java.awt.event.WindowEvent e) {
+                networkClient.disconnect();
+                progress = pReload();
+                refreshLobby();
+                showLobby();
+            }
+
+            @Override
+            public void windowClosing(java.awt.event.WindowEvent e) {
+                networkClient.disconnect();
+                progress = pReload();
+                refreshLobby();
+                showLobby();
+            }
+        });
     }
 }

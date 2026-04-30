@@ -17,4 +17,9 @@ public final class MapFactoryProvider {
     public static MapFactory randomFactory() {
         return FACTORIES.get(RANDOM.nextInt(FACTORIES.size()));
     }
+
+    public static MapFactory getMap(String mapName) {
+        int index = FACTORIES.stream().map(i -> i.getClass().getName()).toList().indexOf(mapName);
+        return FACTORIES.get(index);
+    }
 }

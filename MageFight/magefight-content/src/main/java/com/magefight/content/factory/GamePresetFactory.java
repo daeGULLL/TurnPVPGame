@@ -75,6 +75,8 @@ public class GamePresetFactory {
         return MapFactoryProvider.randomFactory().createMap();
     }
 
+    public BattleMap createMap(String mapName) { return MapFactoryProvider.getMap(mapName).createMap(); }
+
     private List<SkillTemplate> mergeSkills(List<SkillTemplate> baseSkills, List<SkillTemplate> learnedTreeSkills) {
         Map<String, SkillTemplate> merged = new LinkedHashMap<>();
         for (SkillTemplate skill : baseSkills) {

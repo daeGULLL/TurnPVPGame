@@ -65,6 +65,7 @@ public class MageFightFrame extends JFrame {
     private final GamePresetFactory presetFactory = new GamePresetFactory();
     private final Consumer<MageProgress> progressSaver;
     private MageProgress progress;
+    private GameNetworkClient networkClient;
 
     private GameSession session;
     private FighterSpec playerSpec;
@@ -93,10 +94,15 @@ public class MageFightFrame extends JFrame {
     }
 
     public MageFightFrame(MageProgress progress, String accountId, Consumer<MageProgress> progressSaver) {
+        this(progress, accountId, progressSaver, null);
+    }
+
+    public MageFightFrame(MageProgress progress, String accountId, Consumer<MageProgress> progressSaver, GameNetworkClient networkClient) {
         super("MageFight - Visible Battle");
 
         this.progress = progress == null ? MageProgress.starter() : progress;
         this.progressSaver = progressSaver == null ? ignored -> {} : progressSaver;
+        this.networkClient = networkClient;
         this.battleReturnHandled = false;
         if (this.progress.selectedArchetype() != null) {
             this.currentArchetype = this.progress.selectedArchetype();
@@ -107,7 +113,11 @@ public class MageFightFrame extends JFrame {
         initUi();
         applyFontRecursively(this, DEFAULT_FONT);
         refreshArchetypeUi();
-        startNewMatch(currentArchetype);
+        if (networkClient == null) {
+            startNewMatch(currentArchetype);
+        } else {
+            startNetworkMatch();
+        }
         addWindowListener(new java.awt.event.WindowAdapter() {
             @Override
             public void windowClosing(java.awt.event.WindowEvent e) {
@@ -294,7 +304,7 @@ public class MageFightFrame extends JFrame {
         if (!validateMyTurn()) {
             return;
         }
-        int damage = 8 + playerSpec.attackBonus();
+        int damage = 5 + playerSpec.attackBonus();
         executeAction(new AttackAction(PLAYER_ID, BOT_ID, damage), "Player uses Attack for " + damage + " dmg.");
     }
 
@@ -349,6 +359,13 @@ public class MageFightFrame extends JFrame {
 
     private boolean executeAction(GameAction action, String logLine) {
         try {
+            // 온라인 게임: 네트워크로 전송
+            if (networkClient != null && networkClient.isConnected()) {
+                sendNetworkAction(action, logLine);
+                return true;
+            }
+
+            // 로컬 게임: 세션에 전송
             session.submitAction(action);
             if (session.consumeWindowAdvancedFlag()) {
                 tickCooldowns(PLAYER_ID);
@@ -367,7 +384,32 @@ public class MageFightFrame extends JFrame {
         }
     }
 
+    private void sendNetworkAction(GameAction action, String logLine) {
+        try {
+            if (action instanceof AttackAction attack) {
+                networkClient.attack(attack.targetId(), attack.damage());
+            } else if (action instanceof DefendAction defend) {
+                networkClient.defend("Defend");
+            } else if (action instanceof UseSkillAction skill) {
+                networkClient.useSkill(skill.targetId(), skill.skillName());
+            } else if (action instanceof MoveAction move) {
+                networkClient.move(move.targetCol(), move.targetRow());
+            } else if (action instanceof EndTurnAction) {
+                networkClient.endTurn();
+            }
+            log(logLine);
+        } catch (Exception e) {
+            log("Network action failed: " + e.getMessage());
+        }
+    }
+
     private boolean validateMyTurn() {
+        // 온라인 게임: 서버가 검증하므로 로컬 검증 스킵
+        if (networkClient != null && networkClient.isConnected()) {
+            return true;
+        }
+
+        // 로컬 게임: 세션 검증
         if (session.isFinished()) {
             showWinner();
             return false;
@@ -404,7 +446,7 @@ public class MageFightFrame extends JFrame {
             executeAction(new UseSkillAction(BOT_ID, PLAYER_ID, availableSkill.name(), skillDamage),
                     "Bot casts " + availableSkill.name() + " for " + skillDamage + " dmg.");
         } else if (roll < 90) {
-            int damage = 8 + botSpec.attackBonus();
+            int damage = 5 + botSpec.attackBonus();
             executeAction(new AttackAction(BOT_ID, PLAYER_ID, damage), "Bot attacks for " + damage + " dmg.");
         } else {
             if (!tryMoveToward(BOT_ID, PLAYER_ID, "Bot") && availableSkill != null) {
@@ -575,6 +617,7 @@ public class MageFightFrame extends JFrame {
         log("Map: " + combatMap.name() + " - " + combatMap.description());
         refreshArchetypeUi();
         refreshUi();
+        scheduleBotTurn();
     }
 
     private boolean tryMoveToward(String actorId, String targetId, String actorLabel) {
@@ -590,8 +633,12 @@ public class MageFightFrame extends JFrame {
                     };
 
                     for (int[] d : deltas) {
-                        int nextCol = actorPos.col() + d[0];
-                        int nextRow = actorPos.row() + d[1];
+                        MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+                        int nextCol = projectedPos.col() + d[0];
+                        int nextRow = projectedPos.row() + d[1];
+                        if (nextCol == projectedPos.col() && nextRow == projectedPos.row()) {
+                            continue;
+                        }
                         if (!session.isInsideMap(nextCol, nextRow)) {
                             continue;
                         }
@@ -609,8 +656,9 @@ public class MageFightFrame extends JFrame {
 
     private boolean tryMoveInDirection(String actorId, MoveDirection direction, String actorLabel) {
         return session.getPlayerPosition(actorId).map(actorPos -> {
-            int nextCol = actorPos.col() + direction.deltaCol;
-            int nextRow = actorPos.row() + direction.deltaRow;
+            MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+            int nextCol = projectedPos.col() + direction.deltaCol;
+            int nextRow = projectedPos.row() + direction.deltaRow;
             if (!session.isInsideMap(nextCol, nextRow)) {
                 return false;
             }
@@ -792,6 +840,109 @@ public class MageFightFrame extends JFrame {
                 applyFontRecursively(childContainer, font);
             }
         }
+    }
+
+    private void startNetworkMatch() {
+        if (networkClient == null) {
+            return;
+        }
+
+        // 서버 메시지 핸들링
+        networkClient.setOnMessageReceived(msg -> {
+            if ("MATCH_STARTED".equalsIgnoreCase(msg.type())) {
+                handleMatchStarted(msg);
+            } else if ("STATE_UPDATED".equalsIgnoreCase(msg.type())) {
+                handleStateUpdated(msg);
+            } else if ("GAME_ENDED".equalsIgnoreCase(msg.type())) {
+                handleGameEnded(msg);
+            }
+        });
+
+        log("온라인 매칭 대기 중...");
+        turnLabel.setText("Waiting for match...");
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleMatchStarted(com.turngame.server.protocol.ResponseMessage msg) {
+        String playerId = String.valueOf(msg.payload().get("playerId"));
+        String matchId = String.valueOf(msg.payload().get("matchId"));
+        networkClient.setMyPlayerId(playerId);
+        networkClient.setMatchId(matchId);
+
+        log("게임 시작! (ID: " + playerId + ")");
+        turnLabel.setText("Game started!");
+
+        // 맵 정보 로드
+        try {
+            Object mapObj = msg.payload().get("map");
+            if (mapObj instanceof String mapName) {
+                combatMap = presetFactory.createMap(mapName);
+            }
+        } catch (Exception e) {
+            log("맵 로드 실패: " + e.getMessage());
+        }
+
+        refreshUi();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleStateUpdated(com.turngame.server.protocol.ResponseMessage msg) {
+        Map<String, Object> payload = msg.payload();
+        String turnPlayerId = String.valueOf(payload.get("turnPlayerId"));
+        String currentPlayerId = networkClient.getMyPlayerId();
+        String opponent = null;
+
+        // 플레이어 상태 동기화
+        Object playersObj = payload.get("players");
+        if (playersObj instanceof List<?> players) {
+            for (Object p : players) {
+                if (p instanceof Map<?, ?> rawMap) {
+                    Map<String, Object> playerData = (Map<String, Object>) rawMap;
+                    String playerId = String.valueOf(playerData.get("playerId"));
+                    int hp = asInt(playerData.get("hp"));
+                    int maxHp = asInt(playerData.get("maxHp"));
+
+                    if (playerId.equals(currentPlayerId)) {
+                        playerLabel.setText("HP: " + hp + "/" + maxHp);
+                    } else {
+                        botLabel.setText("HP: " + hp + "/" + maxHp);
+                        opponent = playerId;
+                    }
+                }
+            }
+        }
+
+        String turnInfo = "Turn: " + (turnPlayerId.equals(currentPlayerId) ? "YOUR TURN" : "Opponent's Turn");
+        turnLabel.setText(turnInfo);
+
+        refreshUi();
+    }
+
+    private int asInt(Object obj) {
+        if (obj == null) return 0;
+        if (obj instanceof Number num) return num.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(obj));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleGameEnded(com.turngame.server.protocol.ResponseMessage msg) {
+        String winnerId = String.valueOf(msg.payload().get("winnerId"));
+        String currentPlayerId = networkClient.getMyPlayerId();
+
+        if (winnerId.equals(currentPlayerId)) {
+            log("승리!");
+            JOptionPane.showMessageDialog(this, "You win!", "MageFight", JOptionPane.INFORMATION_MESSAGE);
+        } else {
+            log("패배!");
+            JOptionPane.showMessageDialog(this, "You lose!", "MageFight", JOptionPane.INFORMATION_MESSAGE);
+        }
+
+        networkClient.disconnect();
+        dispose();
     }
 
     private void persistProgress() {

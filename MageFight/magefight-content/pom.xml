@@ -7,7 +7,7 @@
     <groupId>com.magefight</groupId>
     <artifactId>magefight-parent</artifactId>
     <version>1.0.0</version>
-    <relativePath>..</relativePath>
+    <relativePath>../pom.xml</relativePath>
   </parent>
 
   <artifactId>magefight-content</artifactId>

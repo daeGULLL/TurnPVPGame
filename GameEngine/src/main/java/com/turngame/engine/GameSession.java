@@ -6,8 +6,12 @@ import com.turngame.domain.enums.ActionType;
 import com.turngame.domain.map.BattleMap;
 import com.turngame.domain.map.MapCellPosition;
 import com.turngame.domain.skill.SkillTemplate;
+import com.turngame.engine.command.AttackAction;
 import com.turngame.engine.command.EndTurnAction;
 import com.turngame.engine.command.GameAction;
+import com.turngame.engine.command.MoveAction;
+import com.turngame.engine.command.DefendAction;
+import com.turngame.engine.command.UseSkillAction;
 import com.turngame.engine.rules.RuleSet;
 import com.turngame.event.ActionAppliedEvent;
 import com.turngame.event.EventBus;
@@ -173,6 +177,7 @@ public class GameSession {
 
         // EndTurnAction 외의 액션은 큐에 저장
         if (!(action instanceof EndTurnAction)) {
+            reserveEnergyForQueuedAction(action);
             pendingActions.computeIfAbsent(action.actorId(), k -> new ArrayList<>()).add(action);
             return;
         }
@@ -202,7 +207,7 @@ public class GameSession {
 
     private void applyAllPendingActions() {
         // 턴 순서대로 액션 적용
-        for (String playerId : getAllPlayerIds()) {
+        for (String playerId : turnManager.turnOrder()) {
             List<GameAction> actions = pendingActions.getOrDefault(playerId, new ArrayList<>());
             for (GameAction action : actions) {
                 ruleSet.apply(action, this);
@@ -229,6 +234,69 @@ public class GameSession {
 
     public Set<String> getReadyPlayers() {
         return turnManager.readyPlayers();
+    }
+
+    public synchronized List<GameAction> getPendingActions(String playerId) {
+        return List.copyOf(pendingActions.getOrDefault(playerId, List.of()));
+    }
+
+    public synchronized Optional<MapCellPosition> getProjectedPlayerPosition(String playerId) {
+        MapCellPosition current = playerPositions.get(playerId);
+        if (current == null) {
+            return Optional.empty();
+        }
+
+        int projectedCol = current.col();
+        int projectedRow = current.row();
+        for (GameAction action : pendingActions.getOrDefault(playerId, List.of())) {
+            if (action instanceof MoveAction move) {
+                projectedCol = move.targetCol();
+                projectedRow = move.targetRow();
+            }
+        }
+        return Optional.of(new MapCellPosition(projectedCol, projectedRow));
+    }
+
+    public synchronized int getPendingEnergySpent(String playerId) {
+        int total = 0;
+        for (GameAction action : pendingActions.getOrDefault(playerId, List.of())) {
+            if (action instanceof MoveAction || action instanceof AttackAction || action instanceof DefendAction) {
+                total += 1;
+            } else if (action instanceof UseSkillAction skill) {
+                SkillTemplate template = skillTemplates.get(skill.skillName());
+                if (template != null) {
+                    total += template.failEnergyCost() + template.successEnergyCost();
+                }
+            }
+        }
+        return total;
+    }
+
+    private void reserveEnergyForQueuedAction(GameAction action) {
+        PlayerState actor = playerStates.get(action.actorId());
+        if (actor == null) {
+            return;
+        }
+
+        int reservedEnergy = 0;
+        if (action instanceof AttackAction) {
+            reservedEnergy = 1;
+        } else if (action instanceof DefendAction) {
+            reservedEnergy = 1;
+        } else if (action instanceof MoveAction) {
+            reservedEnergy = 1;
+        } else if (action instanceof UseSkillAction skill) {
+            SkillTemplate template = skillTemplates.get(skill.skillName());
+            if (template != null) {
+                reservedEnergy = template.failEnergyCost() + template.successEnergyCost();
+            } else {
+                reservedEnergy = 10;
+            }
+        }
+
+        if (reservedEnergy > 0) {
+            actor.recordEnergySpentInWindow(reservedEnergy);
+        }
     }
 
     public synchronized boolean consumeWindowAdvancedFlag() {

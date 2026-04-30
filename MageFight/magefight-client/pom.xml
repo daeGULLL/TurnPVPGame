@@ -7,7 +7,7 @@
     <groupId>com.magefight</groupId>
     <artifactId>magefight-parent</artifactId>
     <version>1.0.0</version>
-    <relativePath>..</relativePath>
+    <relativePath>../pom.xml</relativePath>
   </parent>
 
   <artifactId>magefight-client</artifactId>
@@ -31,6 +31,29 @@
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.3</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>all</shadedClassifierName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.magefight.MageFightApp</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

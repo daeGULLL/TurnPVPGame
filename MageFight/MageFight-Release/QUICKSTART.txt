@@ -1,0 +1,68 @@
+================================================
+  MageFight - 빠른 시작 가이드
+================================================
+
+## 준비사항
+
+- Java 17 이상 설치 필수
+  다운로드: https://adoptium.net/
+  설치 후 터미널에서 'java -version' 실행 확인
+
+## 실행 방법
+
+### Windows
+1. run-magefight.bat 더블클릭
+2. 또는 명령어: run-magefight.bat
+
+### macOS/Linux
+1. 터미널에서: chmod +x run-magefight.sh
+2. 실행: ./run-magefight.sh
+
+## 게임 시작
+
+1. 로그인 화면
+   - Account: 원하는 ID 입력
+   - Password: 원하는 비밀번호 입력
+   - Nickname: 게임 내 이름
+
+2. "Create Account" 또는 "Login" 클릭
+
+3. 로비 화면
+   - Character: 아키타입 선택 (APPRENTICE / WARRIOR / MAGE)
+   - "Find Online Match" 클릭
+
+4. 게임 로비
+   - Nickname: 플레이어 닉네임 입력
+   - Character: 아키타입 선택
+   - "Find Game" 클릭
+
+5. 대기
+   - 다른 플레이어가 연결될 때까지 대기
+   - 매칭되면 게임 시작!
+
+## 게임 서버
+
+게임은 다음 서버에 자동으로 연결됩니다:
+- 서버: game.yeunsuh.online:9090
+- 변경 불가능 (고정된 주소)
+
+## 문제 해결
+
+### "Java가 설치되어 있지 않습니다" 에러
+→ Java 17 이상을 설치해주세요
+→ 다운로드: https://adoptium.net/
+
+### "Connection refused" 에러
+→ 인터넷 연결 확인
+→ 게임 서버가 실행 중인지 확인
+→ 방화벽 설정 확인
+
+### 게임이 느리거나 응답 없음
+→ 인터넷 속도 확인
+→ 다른 애플리케이션 종료 후 재시도
+
+## 연락처
+
+문제가 있으시면 관리자에게 연락해주세요.
+
+================================================

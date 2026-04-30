@@ -37,6 +37,10 @@ public class TurnManager {
         return windowDurationSeconds;
     }
 
+    public List<String> turnOrder() {
+        return turnOrder;
+    }
+
     public boolean markReady(String playerId) {
         if (!turnOrder.contains(playerId)) {
             return false;
