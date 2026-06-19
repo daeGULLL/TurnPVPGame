@@ -7,7 +7,7 @@
 if ! command -v java &> /dev/null; then
     echo ""
     echo "[ERROR] Java가 설치되어 있지 않습니다."
-    echo "Java 17 이상 설치 필요: https://adoptium.net/"
+    echo "Java 17 이상 설치 필요: https://www.oracle.com/java/technologies/javase-jdk17-downloads.html"
     echo ""
     exit 1
 fi

@@ -51,8 +51,9 @@ C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\factory\skill\War
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\replay\ReplayRecorder.java
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\account\AccountStore.java
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\ClientSession.java
-C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\GameServer.java
+C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\GameWebSocketEndpoint.java
+C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\HttpRelayServer.java
+C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\HttpRelayServerMain.java
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\protocol\MessageCodec.java
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\protocol\RequestMessage.java
 C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\protocol\ResponseMessage.java
-C:\Users\cathy\workspace\GameEngine\src\main\java\com\turngame\server\ServerMain.java

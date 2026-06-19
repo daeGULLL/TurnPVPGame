@@ -23,15 +23,15 @@ public final class MageSkillTreeFactory {
                     "flame",
                     "Flame Branch",
                     List.of(
-                            new SkillTreeNode("flame", skill("Firebolt", 8, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of()),
-                            new SkillTreeNode("flame", skill("Frost Nova", 12, 2, SkillEffect.AreaType.STATIC, 2), 2, 2, List.of("Firebolt"))
+                            new SkillTreeNode("flame", catalogSkill("Firebolt", 8, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of()),
+                            new SkillTreeNode("flame", catalogSkill("Frost Nova", 12, 2, SkillEffect.AreaType.STATIC, 2), 2, 2, List.of("Firebolt"))
                     )
             );
             SkillTreeBranch mobilityBranch = new SkillTreeBranch(
                     "mobility",
                     "Mobility Branch",
                     List.of(
-                            new SkillTreeNode("mobility", skill("Blink Cut", 16, 3, SkillEffect.AreaType.DYNAMIC, 2), 2, 3, List.of("Frost Nova"))
+                            new SkillTreeNode("mobility", catalogSkill("Blink Cut", 16, 3, SkillEffect.AreaType.DYNAMIC, 2), 2, 3, List.of("Frost Nova"))
                     )
             );
             return new MageSkillTree(
@@ -46,15 +46,15 @@ public final class MageSkillTreeFactory {
                     "rune",
                     "Rune Branch",
                     List.of(
-                            new SkillTreeNode("rune", skill("Arcane Sigil", 7, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of()),
-                            new SkillTreeNode("rune", skill("Rune Ward", 11, 2, SkillEffect.AreaType.STATIC, 2), 2, 2, List.of("Arcane Sigil"))
+                            new SkillTreeNode("rune", catalogSkill("Arcane Sigil", 7, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of()),
+                            new SkillTreeNode("rune", catalogSkill("Rune Ward", 11, 2, SkillEffect.AreaType.STATIC, 2), 2, 2, List.of("Arcane Sigil"))
                     )
             );
             SkillTreeBranch burstBranch = new SkillTreeBranch(
                     "burst",
                     "Burst Branch",
                     List.of(
-                            new SkillTreeNode("burst", skill("Mana Burst", 15, 3, SkillEffect.AreaType.DYNAMIC, 3), 2, 3, List.of("Rune Ward"))
+                            new SkillTreeNode("burst", catalogSkill("Mana Burst", 15, 3, SkillEffect.AreaType.DYNAMIC, 3), 2, 3, List.of("Rune Ward"))
                     )
             );
             return new MageSkillTree(
@@ -81,10 +81,10 @@ public final class MageSkillTreeFactory {
                 "advance",
                 "Advance Branch",
                 List.of(
-                        new SkillTreeNode("advance", skill("Firebolt", 10, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of(baseStarter.name())),
-                        new SkillTreeNode("advance", skill("Blink Cut", 14, 2, SkillEffect.AreaType.DYNAMIC, 2), 2, 2, List.of("Firebolt")),
-                        new SkillTreeNode("advance", skill("Arcane Sigil", 12, 2, SkillEffect.AreaType.STATIC, 1), 2, 2, List.of("Firebolt")),
-                        new SkillTreeNode("advance", skill("Mana Burst", 18, 3, SkillEffect.AreaType.DYNAMIC, 3), 3, 3, List.of("Blink Cut", "Arcane Sigil"))
+                        new SkillTreeNode("advance", catalogSkill("Firebolt", 10, 1, SkillEffect.AreaType.STATIC, 1), 1, 1, List.of(baseStarter.name())),
+                        new SkillTreeNode("advance", catalogSkill("Blink Cut", 14, 2, SkillEffect.AreaType.DYNAMIC, 2), 2, 2, List.of("Firebolt")),
+                        new SkillTreeNode("advance", catalogSkill("Arcane Sigil", 12, 2, SkillEffect.AreaType.STATIC, 1), 2, 2, List.of("Firebolt")),
+                        new SkillTreeNode("advance", catalogSkill("Mana Burst", 18, 3, SkillEffect.AreaType.DYNAMIC, 3), 3, 3, List.of("Blink Cut", "Arcane Sigil"))
                 )
         );
 
@@ -105,9 +105,13 @@ public final class MageSkillTreeFactory {
         return skill(name, baseDamage, cooldownTurns, 1, 1, SkillEffect.AreaType.STATIC, 1);
     }
 
-    private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns, SkillEffect.AreaType areaType, int areaRadius) {
-        return skill(name, baseDamage, cooldownTurns, 1, 1, areaType, areaRadius);
-    }
+        private static SkillTemplate catalogSkill(String name, int baseDamage, int cooldownTurns, SkillEffect.AreaType areaType, int areaRadius) {
+                SkillTemplate catalog = MageSkillCatalog.templateOrNull(name);
+                if (catalog != null) {
+                        return catalog;
+                }
+                return skill(name, baseDamage, cooldownTurns, 1, 1, areaType, areaRadius);
+        }
 
     private static SkillTemplate skill(String name, int baseDamage, int cooldownTurns, int failEnergyCost, int successEnergyCost, SkillEffect.AreaType areaType, int areaRadius) {
         return new SkillTemplate(

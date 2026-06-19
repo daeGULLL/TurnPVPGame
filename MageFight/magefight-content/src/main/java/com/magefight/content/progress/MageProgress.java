@@ -182,4 +182,19 @@ public class MageProgress {
         }
         selectedArchetype = archetype;
     }
+
+    public boolean promoteArchetype(MageArchetype archetype) {
+        if (archetype == null) {
+            return false;
+        }
+        if (selectedArchetype == null) {
+            selectedArchetype = archetype;
+            return true;
+        }
+        if (archetype.tier() <= selectedArchetype.tier()) {
+            return false;
+        }
+        selectedArchetype = archetype;
+        return true;
+    }
 }

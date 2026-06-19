@@ -24,7 +24,7 @@
 
 ```bash
 mvn package
-java -cp target/turngame-engine-1.0.0.jar com.turngame.server.ServerMain 9090 20
+java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
 
 # 같은 서버에 접속하는 예시
 java -cp target/turngame-engine-1.0.0.jar com.turngame.client.ConsoleClient 127.0.0.1 9090 userA WARRIOR

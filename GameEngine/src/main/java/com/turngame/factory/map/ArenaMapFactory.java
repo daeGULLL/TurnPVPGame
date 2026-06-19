@@ -15,7 +15,7 @@ public class ArenaMapFactory extends MapFactory {
         3,
         List.of(
             "...",
-            "...",
+            ".S.",
             "..."
         )
     );

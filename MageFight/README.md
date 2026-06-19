@@ -56,7 +56,7 @@ mvn clean package
 **2. 서버 실행** (클라우드플레어 호스팅 머신)
 ```bash
 # yeunsuh.online (또는 서브도메인)에서 포트 9090 listen
-java -cp target/turngame-engine-1.0.0.jar com.turngame.server.ServerMain 9090 20
+java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
 ```
 
 **3. Cloudflare 설정**
@@ -65,6 +65,9 @@ java -cp target/turngame-engine-1.0.0.jar com.turngame.server.ServerMain 9090 20
   - 또는 `yeunsuh.online` → 서버 IP
 - Cloudflare > SSL/TLS: Full (strict) 또는 Flexible 설정
 - 방화벽 규칙에서 포트 9090 허용
+- 중요: Cloudflare 프록시(오렌지 구름)가 켜진 상태에서는 9090이 차단될 수 있습니다.
+  - `game.yeunsuh.online`는 DNS only(회색 구름)로 두거나,
+  - 서버 포트를 Cloudflare 지원 포트(예: 8080, 8443 등)로 변경하세요.
 
 #### 클라이언트 연결
 
@@ -78,6 +81,8 @@ java -cp target/turngame-engine-1.0.0.jar com.turngame.server.ServerMain 9090 20
 4. "Find Game" 버튼 클릭
 5. 다른 플레이어가 연결될 때까지 대기
 6. 매칭 완료 → 게임 시작
+
+참고: 클라이언트는 `game.yeunsuh.online:9090` 직결이 실패하면 자동으로 `https://game.yeunsuh.online` 경로로 재시도합니다.
 
 #### 네트워크 구조
 
@@ -129,6 +134,65 @@ GameServer (yeunsuh.online:9090)
 ```
 
 자세한 프로토콜은 [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md) 참고
+
+### 배포해서 다른 사람에게 전달하는 방법
+
+JAR 파일 하나만 보내는 방식은 권장하지 않습니다. 이 프로젝트는 외부 의존성이 있으므로, 다음 둘 중 하나로 전달해야 합니다.
+
+1. **가장 권장**: fat JAR 하나와 실행 스크립트를 함께 묶어서 ZIP으로 전달
+  - `magefight-client`와 `magefight-content` 그리고 외부 라이브러리를 모두 포함한 실행 JAR 생성
+  - `run-magefight.bat` 또는 `run-magefight.sh` 제공
+  - 사용자는 ZIP을 풀고 스크립트만 실행
+2. **개발자용 전달**: 소스 전체와 Maven 환경을 함께 전달
+  - 받는 사람이 Java 17과 Maven을 설치해야 함
+  - `GameEngine`과 `MageFight`를 각각 빌드한 뒤 실행
+
+배포 패키지 예시:
+
+```text
+MageFight-Release/
+├── magefight-client-1.0.0-all.jar
+├── run-magefight.bat
+├── run-magefight.sh
+├── QUICKSTART.txt
+└── README.txt (optional)
+```
+
+#### 실제 배포 과정
+
+**1단계: Fat JAR 빌드 (개발자)**
+```bash
+cd c:\Users\cathy\workspace\MageFight
+mvn clean package
+```
+
+생성 파일:
+```
+magefight-client/target/magefight-client-1.0.0-all.jar
+```
+
+**2단계: 배포 폴더 준비**
+```bash
+# 배포 폴더 생성
+mkdir MageFight-Release
+cd MageFight-Release
+
+# 빌드 산출물 복사
+copy ..\magefight-client\target\magefight-client-1.0.0-all.jar .
+
+# 실행 스크립트 복사
+copy ..\run-magefight.bat .
+copy ..\run-magefight.sh .
+copy ..\QUICKSTART.txt .
+```
+
+**3단계: ZIP으로 압축 후 전달**
+```bash
+# Windows PowerShell
+Compress-Archive -Path MageFight-Release -DestinationPath MageFight-v1.0.0.zip
+
+# 또는 7-zip / WinRAR 등의 도구 사용
+```
 
 #### 사용자 입장에서의 실행
 
@@ -206,7 +270,7 @@ mvn clean package
 **2. Run Server** (on your Cloudflare-hosted machine)
 ```bash
 # Listen on port 9090 at yeunsuh.online (or subdomain)
-java -cp target/turngame-engine-1.0.0.jar com.turngame.server.ServerMain 9090 20
+java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
 ```
 
 **3. Cloudflare Configuration**
@@ -279,6 +343,63 @@ All communication is JSON-based:
 ```
 
 For full protocol details, see [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md)
+
+### How to distribute it to other people
+
+Sending only a single JAR is not recommended here because the client has external dependencies. Use one of these approaches instead:
+
+1. **Recommended**: package a fat JAR plus launch scripts in a ZIP
+  - build one runnable JAR that includes `magefight-client`, `magefight-content`, and all external libraries
+  - provide `run-magefight.bat` or `run-magefight.sh`
+  - the recipient only unzips and runs the script
+2. **Developer handoff**: send the full source and Maven setup
+  - the recipient needs Java 17 and Maven
+  - they build `GameEngine` and `MageFight` separately before running
+
+Example release layout:
+
+```text
+MageFight-Release/
+├── magefight-all.jar
+├── run-magefight.bat
+├── run-magefight.sh
+├── QUICKSTART.txt
+└── README.txt (optional)
+```
+
+#### Actual deployment process
+
+**Step 1: Build fat JAR (developer)**
+```bash
+cd c:\Users\cathy\workspace\MageFight
+mvn clean package
+```
+
+Output file:
+```
+magefight-client/target/magefight-client-1.0.0-all.jar
+```
+
+**Step 2: Prepare release folder**
+```bash
+# Create release directory
+mkdir MageFight-Release
+cd MageFight-Release
+
+# Copy the JAR
+copy ..\magefight-client\target\magefight-client-1.0.0-all.jar .
+
+# Copy launch scripts
+copy ..\run-magefight.bat .
+copy ..\run-magefight.sh .
+copy ..\QUICKSTART.txt .
+```
+
+**Step 3: Package as ZIP and distribute**
+```bash
+# Windows PowerShell
+Compress-Archive -Path MageFight-Release -DestinationPath MageFight-v1.0.0.zip
+```
 
 #### End-user flow
 

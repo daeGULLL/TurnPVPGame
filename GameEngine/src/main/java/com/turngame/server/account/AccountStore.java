@@ -42,6 +42,9 @@ public final class AccountStore {
         record.accountId = normalizedId;
         record.passwordHash = hashPassword(password);
         record.nickname = nickname == null || nickname.isBlank() ? normalizedId : nickname.trim();
+        record.characterDisplayName = record.nickname;
+        record.characterSkinColorHex = "#F5E0C8";
+        record.characterOutfitColorHex = "#80A8DC";
         record.progress = AccountProgressSnapshot.empty();
         accounts.put(normalizedId, record);
         persist();
@@ -76,6 +79,56 @@ public final class AccountStore {
     public synchronized Optional<String> nickname(String accountId) {
         AccountRecord record = accounts.get(normalize(accountId));
         return record == null ? Optional.empty() : Optional.of(record.nickname);
+    }
+
+    public synchronized boolean updateNickname(String accountId, String nickname) {
+        AccountRecord record = accounts.get(normalize(accountId));
+        if (record == null) {
+            return false;
+        }
+        if (nickname == null || nickname.isBlank()) {
+            return false;
+        }
+        record.nickname = nickname.trim();
+        persist();
+        return true;
+    }
+
+    public synchronized Optional<CharacterProfile> characterProfile(String accountId) {
+        AccountRecord record = accounts.get(normalize(accountId));
+        if (record == null) {
+            return Optional.empty();
+        }
+        String displayName = (record.characterDisplayName == null || record.characterDisplayName.isBlank())
+                ? record.nickname
+                : record.characterDisplayName;
+        String skinHex = normalizeHexColor(record.characterSkinColorHex, "#F5E0C8");
+        String outfitHex = normalizeHexColor(record.characterOutfitColorHex, "#80A8DC");
+        return Optional.of(new CharacterProfile(displayName, skinHex, outfitHex));
+    }
+
+    public synchronized boolean updateCharacterProfile(String accountId, String displayName, String skinColorHex, String outfitColorHex) {
+        AccountRecord record = accounts.get(normalize(accountId));
+        if (record == null) {
+            return false;
+        }
+        String resolvedName = displayName == null || displayName.isBlank() ? record.nickname : displayName.trim();
+        record.characterDisplayName = resolvedName;
+        record.characterSkinColorHex = normalizeHexColor(skinColorHex, "#F5E0C8");
+        record.characterOutfitColorHex = normalizeHexColor(outfitColorHex, "#80A8DC");
+        persist();
+        return true;
+    }
+
+    private static String normalizeHexColor(String value, String fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        String normalized = value.trim().toUpperCase();
+        if (normalized.matches("^#[0-9A-F]{6}$")) {
+            return normalized;
+        }
+        return fallback;
     }
 
     private void load() {
@@ -128,6 +181,9 @@ public final class AccountStore {
         String accountId;
         String passwordHash;
         String nickname;
+        String characterDisplayName;
+        String characterSkinColorHex;
+        String characterOutfitColorHex;
         AccountProgressSnapshot progress;
 
         AccountSession toSession() {
@@ -136,6 +192,9 @@ public final class AccountStore {
     }
 
     public record AccountSession(String accountId, String nickname, AccountProgressSnapshot progress) {
+    }
+
+    public record CharacterProfile(String displayName, String skinColorHex, String outfitColorHex) {
     }
 
     public static final class AccountProgressSnapshot {

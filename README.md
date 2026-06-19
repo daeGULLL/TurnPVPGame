@@ -135,8 +135,8 @@
 - `FighterSpec`: 플레이어 상태 (HP, 스탯, 스킬)
 
 #### Server (`com.turngame.server`)
-- `ServerMain`: 서버 진입점 (포트 및 최대 플레이어 설정)
-- `GameServer`: 멀티 클라이언트 관리 및 게임 세션 조율
+- `HttpRelayServerMain`: 서버 진입점 (포트 및 최대 플레이어 설정)
+- `HttpRelayServer`: 멀티 클라이언트 관리 및 게임 세션 조율 (HTTP relay)
 - `ClientHandler`: 개별 클라이언트 연결 처리
 - `AccountStore`: 플레이어 계정 저장
 
@@ -188,7 +188,7 @@
 1. **File** → **Open** → 프로젝트 루트 경로의 `pom.xml` 선택
 2. "Open as Project" 클릭 (GameEngine과 MageFight 모듈 자동 로드)
 
-만약 이미 target 디렉토리들 내에 jar 파일이 존재함이 확인되었으면 2단계의 절차는 건너뛰고 ServerMain과 MageFightApp 2개만 실행하면 됩니다. 
+만약 이미 target 디렉토리들 내에 jar 파일이 존재함이 확인되었으면 2단계의 절차는 건너뛰고 HttpRelayServerMain과 MageFightApp 2개만 실행하면 됩니다. 
 
 #### 2단계: 빌드
 **우측 Maven 패널**에서:
@@ -202,7 +202,7 @@ MageFight → Lifecycle → package (더블클릭)
 
 **GameEngine (서버 + 콘솔 클라이언트)**
 ```
-GameEngine → src/main/java/com/turngame/server/ServerMain.java
+GameEngine → src/main/java/com/turngame/server/HttpRelayServerMain.java
   → 클래스명 좌측 ▶ 클릭
   → Program arguments: 9090 20
 ```

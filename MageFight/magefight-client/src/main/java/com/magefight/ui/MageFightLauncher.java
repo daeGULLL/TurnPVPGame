@@ -1,13 +1,23 @@
 package com.magefight.ui;
 
-import com.magefight.content.model.MageArchetype;
-import com.magefight.content.progress.ArchetypeUnlockService;
-import com.magefight.content.progress.MageProgress;
-import com.turngame.server.account.AccountStore;
+import java.awt.BasicStroke;
+import java.awt.BorderLayout;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GradientPaint;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
+import java.awt.GridLayout;
+import java.awt.RenderingHints;
+import java.util.List;
+import java.util.Random;
 
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JColorChooser;
 import javax.swing.JComboBox;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -15,11 +25,11 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JTextField;
-import java.awt.BorderLayout;
-import java.awt.CardLayout;
-import java.awt.Color;
-import java.awt.Font;
-import java.util.List;
+
+import com.magefight.content.model.MageArchetype;
+import com.magefight.content.progress.ArchetypeUnlockService;
+import com.magefight.content.progress.MageProgress;
+import com.turngame.server.account.AccountStore;
 
 public class MageFightLauncher extends JFrame {
     private static final Font DEFAULT_FONT = new Font("Malgun Gothic", Font.PLAIN, 14);
@@ -37,10 +47,27 @@ public class MageFightLauncher extends JFrame {
     private final JLabel progressLabel = new JLabel();
     private final JComboBox<MageArchetype> archetypeCombo = new JComboBox<>();
     private final JLabel archetypeHint = new JLabel();
+    private final CharacterPreviewPanel characterPreviewPanel = new CharacterPreviewPanel();
+    private final JTextField characterNameField = new JTextField(14);
+    private final JButton skinColorButton = new JButton("Skin Color");
+    private final JButton outfitColorButton = new JButton("Outfit Color");
+    private final JButton randomPresetButton = new JButton("Random Preset");
+    private final JButton saveCharacterButton = new JButton("Save Character");
+    private final Random random = new Random();
+
+    private Color selectedSkinColor = new Color(0xF5E0C8);
+    private Color selectedOutfitColor = new Color(0x80A8DC);
+
+        private static final int CHARACTER_NAME_MIN_LEN = 2;
+        private static final int CHARACTER_NAME_MAX_LEN = 16;
+        private static final List<String> RESERVED_CHARACTER_NAMES = List.of(
+            "admin", "administrator", "gm", "operator", "system", "bot", "moderator"
+        );
 
     private String accountId;
     private MageProgress progress = MageProgress.starter();
     private GameNetworkClient networkClient;
+    private LobbyPanel onlineLobbyPanel;
 
     public MageFightLauncher() {
         super("MageFight - Login");
@@ -109,6 +136,25 @@ public class MageFightLauncher extends JFrame {
         info.add(progressLabel);
         info.add(archetypeHint);
 
+        JPanel characterPanel = new JPanel(new BorderLayout(8, 8));
+        characterPanel.setBorder(BorderFactory.createTitledBorder("Character Preview"));
+        characterPreviewPanel.setPreferredSize(new Dimension(280, 220));
+        characterPanel.add(characterPreviewPanel, BorderLayout.CENTER);
+
+        JPanel characterControls = new JPanel(new GridLayout(3, 2, 8, 8));
+        characterControls.add(new JLabel("Name"));
+        characterControls.add(characterNameField);
+        characterControls.add(skinColorButton);
+        characterControls.add(outfitColorButton);
+        characterControls.add(randomPresetButton);
+        characterControls.add(saveCharacterButton);
+        characterPanel.add(characterControls, BorderLayout.SOUTH);
+
+        skinColorButton.addActionListener(e -> chooseSkinColor());
+        outfitColorButton.addActionListener(e -> chooseOutfitColor());
+        randomPresetButton.addActionListener(e -> applyRandomColorPreset());
+        saveCharacterButton.addActionListener(e -> saveCharacterProfile());
+
         JPanel selection = new JPanel();
         selection.setBorder(BorderFactory.createTitledBorder("Select Current Title"));
         JButton refreshBtn = new JButton("Refresh");
@@ -122,7 +168,10 @@ public class MageFightLauncher extends JFrame {
         selection.add(startBtn);
         selection.add(onlineBtn);
 
-        panel.add(info, BorderLayout.CENTER);
+        JPanel center = new JPanel(new BorderLayout(10, 10));
+        center.add(info, BorderLayout.NORTH);
+        center.add(characterPanel, BorderLayout.CENTER);
+        panel.add(center, BorderLayout.CENTER);
         panel.add(selection, BorderLayout.SOUTH);
 
         cardPanel.add(panel, "lobby");
@@ -155,6 +204,7 @@ public class MageFightLauncher extends JFrame {
     private void handleLogin() {
         String id = accountField.getText().trim();
         String password = new String(passwordField.getPassword());
+        String enteredNickname = nicknameField.getText().trim();
         if (id.isBlank() || password.isBlank()) {
             authMessage.setText("Account and password are required.");
             return;
@@ -162,6 +212,9 @@ public class MageFightLauncher extends JFrame {
 
         accountStore.login(id, password).ifPresentOrElse(session -> {
             accountId = session.accountId();
+            if (!enteredNickname.isBlank()) {
+                accountStore.updateNickname(accountId, enteredNickname);
+            }
             progress = loadProgressSnapshot(session.progress());
             authMessage.setText(" ");
             refreshLobby();
@@ -174,7 +227,7 @@ public class MageFightLauncher extends JFrame {
             return;
         }
 
-        accountLabel.setText("Account: " + accountId + " / " + accountStore.nickname(accountId).orElse(accountId));
+        accountLabel.setText("Login ID: " + accountId + " | Account Name: " + accountStore.nickname(accountId).orElse(accountId));
         progressLabel.setText("Lv " + progress.level() + " | Wins " + progress.wins() + " | Selected "
                 + (progress.selectedArchetype() == null ? "none" : progress.selectedArchetype().displayName()));
 
@@ -196,6 +249,108 @@ public class MageFightLauncher extends JFrame {
         if (progress.selectedArchetype() != null) {
             archetypeCombo.setSelectedItem(progress.selectedArchetype());
         }
+
+        loadCharacterProfile();
+    }
+
+    private void loadCharacterProfile() {
+        if (accountId == null) {
+            return;
+        }
+        AccountStore.CharacterProfile profile = accountStore.characterProfile(accountId)
+                .orElse(new AccountStore.CharacterProfile(currentNickname(), "#F5E0C8", "#80A8DC"));
+        characterNameField.setText(profile.displayName());
+        selectedSkinColor = parseHexColor(profile.skinColorHex(), new Color(0xF5E0C8));
+        selectedOutfitColor = parseHexColor(profile.outfitColorHex(), new Color(0x80A8DC));
+        characterPreviewPanel.setDisplayName(profile.displayName());
+        characterPreviewPanel.setSkinColor(selectedSkinColor);
+        characterPreviewPanel.setOutfitColor(selectedOutfitColor);
+    }
+
+    private void chooseSkinColor() {
+        Color chosen = JColorChooser.showDialog(this, "Choose Skin Color", selectedSkinColor);
+        if (chosen == null) {
+            return;
+        }
+        selectedSkinColor = chosen;
+        characterPreviewPanel.setSkinColor(chosen);
+    }
+
+    private void chooseOutfitColor() {
+        Color chosen = JColorChooser.showDialog(this, "Choose Outfit Color", selectedOutfitColor);
+        if (chosen == null) {
+            return;
+        }
+        selectedOutfitColor = chosen;
+        characterPreviewPanel.setOutfitColor(chosen);
+    }
+
+    private void saveCharacterProfile() {
+        if (accountId == null) {
+            return;
+        }
+        String displayName = characterNameField.getText() == null ? "" : characterNameField.getText().trim();
+        String validationError = validateCharacterName(displayName);
+        if (validationError != null) {
+            JOptionPane.showMessageDialog(this, validationError, "MageFight", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        boolean saved = accountStore.updateCharacterProfile(
+                accountId,
+                displayName,
+                toHex(selectedSkinColor),
+                toHex(selectedOutfitColor)
+        );
+        if (!saved) {
+            JOptionPane.showMessageDialog(this, "Failed to save character profile.", "MageFight", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        characterPreviewPanel.setDisplayName(displayName);
+        refreshLobby();
+    }
+
+    private void applyRandomColorPreset() {
+        ColorPreset[] presets = {
+                new ColorPreset(new Color(0xF5E0C8), new Color(0x80A8DC)),
+                new ColorPreset(new Color(0xE7C7A7), new Color(0xD67648)),
+                new ColorPreset(new Color(0xD1A27A), new Color(0x7884DB)),
+                new ColorPreset(new Color(0x8F6240), new Color(0x5FB6A4)),
+                new ColorPreset(new Color(0x6D4327), new Color(0xB66AA4))
+        };
+        ColorPreset chosen = presets[random.nextInt(presets.length)];
+        selectedSkinColor = chosen.skinColor();
+        selectedOutfitColor = chosen.outfitColor();
+        characterPreviewPanel.setSkinColor(selectedSkinColor);
+        characterPreviewPanel.setOutfitColor(selectedOutfitColor);
+    }
+
+    private String validateCharacterName(String displayName) {
+        if (displayName == null || displayName.isBlank()) {
+            return "Name cannot be empty.";
+        }
+        if (displayName.length() < CHARACTER_NAME_MIN_LEN || displayName.length() > CHARACTER_NAME_MAX_LEN) {
+            return "Name must be 2-16 characters.";
+        }
+        if (!displayName.matches("^[0-9A-Za-z가-힣 _-]+$")) {
+            return "Name may only contain Korean/English letters, numbers, space, _ and -.";
+        }
+        for (String reserved : RESERVED_CHARACTER_NAMES) {
+            if (reserved.equalsIgnoreCase(displayName)) {
+                return "That name is reserved.";
+            }
+        }
+        return null;
+    }
+
+    private static String toHex(Color color) {
+        return String.format("#%02X%02X%02X", color.getRed(), color.getGreen(), color.getBlue());
+    }
+
+    private static Color parseHexColor(String hex, Color fallback) {
+        if (hex == null || !hex.matches("^#[0-9a-fA-F]{6}$")) {
+            return fallback;
+        }
+        return new Color(Integer.parseInt(hex.substring(1), 16));
     }
 
     private void startBattle() {
@@ -291,24 +446,57 @@ public class MageFightLauncher extends JFrame {
 
     private void buildOnlineMatchCard() {
         networkClient = new GameNetworkClient();
-        LobbyPanel lobbyPanel = new LobbyPanel(networkClient, () -> startOnlineGame());
-        cardPanel.add(lobbyPanel, "onlineMatch");
+        onlineLobbyPanel = new LobbyPanel(
+                networkClient,
+                this::startOnlineGame,
+                this::showLobby,
+                this::currentNickname,
+                this::currentArchetypeDisplay,
+                this::currentServerCharacterType
+        );
+        cardPanel.add(onlineLobbyPanel, "onlineMatch");
     }
 
-    private void showOnlineMatchCard() {
-        cards.show(cardPanel, "onlineMatch");
-    }
-
-    private void startOnlineGame() {
+    private String currentArchetypeDisplay() {
         MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
         if (selected == null) {
             selected = progress.selectedArchetype();
         }
         if (selected == null) {
-            JOptionPane.showMessageDialog(this, "No archetype selected", "MageFight", JOptionPane.INFORMATION_MESSAGE);
-            return;
+            return "WARRIOR";
         }
+        return selected.name();
+    }
 
+    private String currentNickname() {
+        if (accountId == null || accountId.isBlank()) {
+            return "Player";
+        }
+        return accountStore.nickname(accountId).orElse(accountId);
+    }
+
+    private String currentServerCharacterType() {
+        MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
+        if (selected == null) {
+            selected = progress.selectedArchetype();
+        }
+        if (selected == null) {
+            return "WARRIOR";
+        }
+        return switch (selected) {
+            case APPRENTICE, ELEMENTALIST, RUNE_SCHOLAR -> "MAGE";
+        };
+    }
+
+    private void showOnlineMatchCard() {
+        if (onlineLobbyPanel != null) {
+            onlineLobbyPanel.refreshPlayerInfo();
+        }
+        cards.show(cardPanel, "onlineMatch");
+    }
+
+    private void startOnlineGame() {
+        System.out.println("[MageFightLauncher] startOnlineGame invoked");
         // 온라인 게임 시작
         MageFightFrame frame = new MageFightFrame(progress, accountId, p -> accountStore.saveProgress(accountId,
                 AccountStore.AccountProgressSnapshot.fromFields(
@@ -318,6 +506,7 @@ public class MageFightLauncher extends JFrame {
                         p.skillPracticePoints(),
                         p.inspirationPoints()
                 )), networkClient);
+                System.out.println("[MageFightLauncher] frame created, setting visible");
         frame.setVisible(true);
         setVisible(false);
         frame.addWindowListener(new java.awt.event.WindowAdapter() {
@@ -337,5 +526,74 @@ public class MageFightLauncher extends JFrame {
                 showLobby();
             }
         });
+    }
+
+    private final class CharacterPreviewPanel extends JPanel {
+        private String displayName = "Player";
+        private Color skinColor = new Color(0xF5E0C8);
+        private Color outfitColor = new Color(0x80A8DC);
+
+        void setDisplayName(String displayName) {
+            this.displayName = (displayName == null || displayName.isBlank()) ? "Player" : displayName;
+            repaint();
+        }
+
+        void setSkinColor(Color skinColor) {
+            this.skinColor = skinColor == null ? new Color(0xF5E0C8) : skinColor;
+            repaint();
+        }
+
+        void setOutfitColor(Color outfitColor) {
+            this.outfitColor = outfitColor == null ? new Color(0x80A8DC) : outfitColor;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            int w = getWidth();
+            int h = getHeight();
+            g2.setPaint(new GradientPaint(0, 0, new Color(220, 240, 255), 0, h, new Color(58, 67, 56)));
+            g2.fillRoundRect(0, 0, w, h, 14, 14);
+
+            int unitW = Math.max(70, w / 4);
+            int unitH = Math.max(100, h / 2);
+            int ux = (w - unitW) / 2;
+            int uy = (h - unitH) / 2 - 8;
+
+            g2.setColor(new Color(0, 0, 0, 100));
+            g2.fillOval(ux + 6, uy + unitH - 8, unitW - 12, 14);
+
+            g2.setColor(outfitColor);
+            int[] robeX = {ux + unitW / 2, ux + unitW - 6, ux + 6};
+            int[] robeY = {uy + 12, uy + unitH, uy + unitH};
+            g2.fillPolygon(robeX, robeY, 3);
+
+            int headSize = Math.max(16, (int) (unitW * 0.28));
+            g2.setColor(skinColor);
+            g2.fillOval(ux + (unitW - headSize) / 2, uy + 2, headSize, headSize);
+
+            g2.setColor(new Color(255, 255, 255, 220));
+            g2.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 11f));
+            g2.drawString("YOU", ux + 8, uy - 2);
+
+            g2.setColor(new Color(20, 24, 35, 180));
+            g2.fillRoundRect(12, h - 42, Math.max(120, w - 24), 28, 12, 12);
+            g2.setColor(Color.WHITE);
+            g2.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
+            g2.drawString(displayName, 22, h - 23);
+
+            g2.setColor(new Color(255, 255, 255, 110));
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawRoundRect(2, 2, w - 5, h - 5, 14, 14);
+
+            g2.dispose();
+        }
+    }
+
+    private record ColorPreset(Color skinColor, Color outfitColor) {
     }
 }

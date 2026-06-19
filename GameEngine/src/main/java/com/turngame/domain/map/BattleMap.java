@@ -11,6 +11,11 @@ public record BattleMap(
 		int cols,
 		List<String> layoutRows
 ) {
+	public static final char TILE_EMPTY = '.';
+	public static final char TILE_BLOCKED = '#';
+	public static final char TILE_PILLAR = 'P';
+	public static final char TILE_SLOW = 'S';
+
 	public BattleMap {
 		Objects.requireNonNull(code, "code cannot be null");
 		Objects.requireNonNull(name, "name cannot be null");
@@ -43,5 +48,25 @@ public record BattleMap(
 		return java.util.stream.IntStream.range(0, rows)
 				.mapToObj(row -> ".".repeat(cols))
 				.toList();
+	}
+
+	public char tileAt(int col, int row) {
+		if (row < 0 || row >= rows || col < 0 || col >= cols) {
+			return TILE_EMPTY;
+		}
+		return layoutRows.get(row).charAt(col);
+	}
+
+	public boolean isBlockedCell(int col, int row) {
+		char tile = tileAt(col, row);
+		return tile == TILE_BLOCKED || tile == TILE_PILLAR;
+	}
+
+	public boolean isSlowCell(int col, int row) {
+		return tileAt(col, row) == TILE_SLOW;
+	}
+
+	public boolean isPassableCell(int col, int row) {
+		return !isBlockedCell(col, row);
 	}
 }

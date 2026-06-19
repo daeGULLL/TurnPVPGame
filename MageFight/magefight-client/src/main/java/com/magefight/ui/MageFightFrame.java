@@ -1,17 +1,58 @@
 package com.magefight.ui;
 
+import java.awt.BorderLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Container;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.GridLayout;
+import java.beans.PropertyChangeEvent;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Random;
+import java.util.Set;
+import java.util.function.Consumer;
+
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JDialog;
+import javax.swing.JEditorPane;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTextArea;
+import javax.swing.ScrollPaneConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+import javax.swing.UIManager;
+
 import com.magefight.content.factory.GamePresetFactory;
 import com.magefight.content.model.FighterSpec;
 import com.magefight.content.model.MageArchetype;
 import com.magefight.content.model.MageSkillTree;
 import com.magefight.content.model.SkillTreeNode;
-import com.turngame.domain.skill.SkillTemplate;
+import com.magefight.content.model.SkillVisualProfile;
+import com.magefight.content.progress.ArchetypePromotionService;
 import com.magefight.content.progress.ArchetypeUnlockService;
 import com.magefight.content.progress.MageProgress;
 import com.turngame.domain.PlayerState;
+import com.turngame.domain.enums.ActionType;
 import com.turngame.domain.map.BattleMap;
 import com.turngame.domain.map.MapCellPosition;
-import com.turngame.domain.skill.SkillEffect;
+import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.engine.GameSession;
 import com.turngame.engine.TurnManager;
 import com.turngame.engine.command.AttackAction;
@@ -22,88 +63,173 @@ import com.turngame.engine.command.MoveAction;
 import com.turngame.engine.command.UseSkillAction;
 import com.turngame.engine.rules.BasicRuleSet;
 import com.turngame.event.EventBus;
+import com.turngame.server.account.AccountStore;
 
-import javax.swing.BorderFactory;
-import javax.swing.BoxLayout;
-import javax.swing.JButton;
-import javax.swing.JComboBox;
-import javax.swing.JFrame;
-import javax.swing.JLabel;
-import javax.swing.JOptionPane;
-import javax.swing.JPanel;
-import javax.swing.JScrollPane;
-import javax.swing.JTextArea;
-import javax.swing.UIManager;
-import javax.swing.SwingUtilities;
-import javax.swing.Timer;
-import javax.swing.ScrollPaneConstants;
-import java.awt.BasicStroke;
-import java.awt.BorderLayout;
-import java.awt.GradientPaint;
-import java.awt.Graphics;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.awt.Color;
-import java.awt.Component;
-import java.awt.Container;
-import java.awt.Font;
-import java.awt.GridLayout;
-import java.awt.Dimension;
-import java.awt.Stroke;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Optional;
-import java.util.function.Consumer;
-
-public class MageFightFrame extends JFrame {
+public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     private static final String PLAYER_ID = "p-1";
     private static final String BOT_ID = "p-2";
+    private static final Color SURFACE_SOFT = new Color(246, 248, 252);
+    private static final Color CHIP_BG = new Color(230, 238, 251);
+    private static final Color CHIP_TEXT = new Color(38, 74, 126);
+    private static final Color CHIP_SUCCESS_BG = new Color(225, 245, 233);
+    private static final Color CHIP_SUCCESS_TEXT = new Color(28, 101, 52);
+    private static final Color CHIP_WARN_BG = new Color(255, 244, 226);
+    private static final Color CHIP_WARN_TEXT = new Color(148, 90, 13);
+    private static final Set<String> TILE_AIM_SKILLS = Set.of("Firebolt");
 
     private final GamePresetFactory presetFactory = new GamePresetFactory();
+    private final OnlineStateSyncService onlineStateSyncService = new OnlineStateSyncService(presetFactory);
+    private final AccountStore accountStore = AccountStore.shared();
+    private final ArchetypePromotionService promotionService = new ArchetypePromotionService();
     private final Consumer<MageProgress> progressSaver;
+    private final String accountId;
+    private final Color playerSkinColor;
+    private final Color playerOutfitColor;
     private MageProgress progress;
     private GameNetworkClient networkClient;
+    private String onlineOpponentId;
 
     private GameSession session;
     private FighterSpec playerSpec;
     private FighterSpec botSpec;
+    private String playerDisplayName;
+    private String opponentDisplayName;
     private BattleMap combatMap;
     private MageArchetype currentArchetype = MageArchetype.APPRENTICE;
+    private MageArchetype pendingPromotionTarget;
     private final Map<String, FighterSpec> specs = new HashMap<>();
     private final Map<String, Map<String, Integer>> cooldowns = new HashMap<>();
     private final Random random = new Random();
-    private boolean elementalPathPromptShown;
     private boolean battleReturnHandled;
+    private JDialog activeResultDialog;
+    private boolean resolutionPlaybackActive;
+    private int resolutionPlaybackStepIndex;
+    private int lastPlayedResolvedWindowIndex;
+    private PhaseType currentPhaseType = PhaseType.IMPACT;
+    private long currentPhaseStartedAtMs;
+    private int currentPhaseDurationMs;
+    private Timer phaseFrameTimer;
+    private List<GameSession.ResolvedActionView> currentPlaybackActions = List.of();
+    private final Map<String, Integer> playbackHpBeforeByPlayer = new HashMap<>();
+    private final Map<String, Integer> playbackHpByPlayer = new HashMap<>();
+    private final Map<String, MapCellPosition> playbackPositionBeforeByPlayer = new HashMap<>();
+    private final Map<String, MapCellPosition> playbackPositionByPlayer = new HashMap<>();
+    private String pendingOnlineResultText;
+    private boolean pendingOnlineResultDisconnect;
+    private boolean promotionEffectActive;
+    private long promotionEffectStartedAtMs;
+    private String promotionEffectText;
+    private final JButton promotionReadyBtn = new JButton("승급 가능");
+    private Timer promotionBlinkTimer;
+    private boolean promotionBlinkOn;
+
+    private final JLabel matchingStatusLabel = new JLabel("Offline Mode");
+    private final JButton findGameBtn = new JButton("Find Game");
+    private final JButton cancelMatchmakingBtn = new JButton("Cancel");
+    private Timer matchingTimeoutTimer;
+    private static final long MATCHMAKING_TIMEOUT_MS = 60000;
+    private Timer onlineTurnTimer;
+    private int onlineWindowDurationSeconds = 60;
+    private int onlineWindowIndex = -1;
+    private long onlineWindowDeadlineMs;
+    private String onlineTurnPlayerId = "";
+    private boolean onlineOpponentReady;
+    private String pendingAimedSkillName;
+
+    private enum PhaseType {
+        CAST,
+        IMPACT
+    }
+
+    private record PlaybackPhase(
+            GameSession.ResolutionStep step,
+            PhaseType phaseType,
+            int durationMs
+    ) {
+    }
 
     private final JLabel mapLabel = new JLabel();
     private final JLabel turnLabel = new JLabel();
     private final JLabel playerLabel = new JLabel();
     private final JLabel botLabel = new JLabel();
-    private final JTextArea cooldownArea = new JTextArea();
+    private final JEditorPane cooldownArea = new JEditorPane();
     private final JTextArea logArea = new JTextArea();
+    private final JLabel logSummaryLabel = new JLabel("Recent: -");
+    private final JLabel actionFeedbackLabel = new JLabel("행동 준비 완료.");
+    private final JLabel coreHpLabel = new JLabel();
+    private final JLabel coreEnergyLabel = new JLabel();
+    private final JLabel coreRangeLabel = new JLabel();
+    private final JLabel coreStateLabel = new JLabel();
+    private final JLabel turnOwnerChip = new JLabel();
+    private final JLabel timerChip = new JLabel();
+    private final JLabel readyChip = new JLabel();
+    private final JLabel connectionChip = new JLabel();
     private final JComboBox<String> skillCombo = new JComboBox<>();
     private final JComboBox<MageArchetype> archetypeCombo = new JComboBox<>();
-    private final JPanel firstPersonView = new FirstPersonBattlePanel();
+    private final BattleViewPanel firstPersonView;
     private final SkillTreePanel skillTreePanel = new SkillTreePanel();
+    private final JCheckBox actionLogFilter = new JCheckBox("Action", true);
+    private final JCheckBox combatLogFilter = new JCheckBox("Combat", true);
+    private final JCheckBox progressionLogFilter = new JCheckBox("Progress", true);
+    private final JCheckBox systemLogFilter = new JCheckBox("System", true);
+    private final List<LogEntry> logEntries = new ArrayList<>();
+
+    private enum LogCategory {
+        ACTION,
+        COMBAT,
+        PROGRESSION,
+        SYSTEM
+    }
+
+    private record LogEntry(int windowIndex, LogCategory category, String message) {
+    }
 
     public MageFightFrame() {
-        this(MageProgress.starter(), null, progress -> {});
+        this(MageProgress.starter(), null, ignored -> {});
     }
 
-    public MageFightFrame(MageProgress progress, String accountId, Consumer<MageProgress> progressSaver) {
-        this(progress, accountId, progressSaver, null);
+    public MageFightFrame(MageProgress initialProgress, String accountId, Consumer<MageProgress> progressSaver) {
+        this(initialProgress, accountId, progressSaver, null);
     }
 
-    public MageFightFrame(MageProgress progress, String accountId, Consumer<MageProgress> progressSaver, GameNetworkClient networkClient) {
+    public MageFightFrame(MageProgress initialProgress, String accountId, Consumer<MageProgress> progressSaver, GameNetworkClient networkClient) {
         super("MageFight - Visible Battle");
 
-        this.progress = progress == null ? MageProgress.starter() : progress;
+        this.firstPersonView = new BattleViewPanel(this);
+        this.accountId = accountId;
+        AccountStore.CharacterProfile profile = accountId == null ? null : accountStore.characterProfile(accountId).orElse(null);
+        this.playerSkinColor = parseHexColor(profile == null ? null : profile.skinColorHex(), new Color(0xF5E0C8));
+        this.playerOutfitColor = parseHexColor(profile == null ? null : profile.outfitColorHex(), new Color(0x80A8DC));
+        this.playerDisplayName = profile == null ? resolveOnlineNickname() : profile.displayName();
+        this.opponentDisplayName = "Bot";
+        this.progress = initialProgress == null ? MageProgress.starter() : initialProgress;
         this.progressSaver = progressSaver == null ? ignored -> {} : progressSaver;
         this.networkClient = networkClient;
+        configureSkillVisualRegistry();
+        this.onlineOpponentId = null;
         this.battleReturnHandled = false;
+        this.activeResultDialog = null;
+        this.resolutionPlaybackActive = false;
+        this.resolutionPlaybackStepIndex = 0;
+        this.lastPlayedResolvedWindowIndex = -1;
+        this.currentPhaseStartedAtMs = 0L;
+        this.currentPhaseDurationMs = 1;
+        this.pendingOnlineResultText = null;
+        this.pendingOnlineResultDisconnect = false;
+        this.onlineWindowDurationSeconds = 60;
+        this.onlineWindowIndex = -1;
+        this.onlineWindowDeadlineMs = 0L;
+        this.onlineTurnPlayerId = "";
+        this.onlineOpponentReady = false;
+        this.pendingAimedSkillName = null;
+        stopOnlineTurnTimer();
+        this.pendingPromotionTarget = null;
+        this.promotionService.resetForNewMatch();
+        this.promotionEffectActive = false;
+        this.promotionEffectStartedAtMs = 0L;
+        this.promotionEffectText = "";
+        this.promotionBlinkTimer = null;
+        this.promotionBlinkOn = false;
         if (this.progress.selectedArchetype() != null) {
             this.currentArchetype = this.progress.selectedArchetype();
         }
@@ -111,7 +237,7 @@ public class MageFightFrame extends JFrame {
         applyGlobalFont();
 
         initUi();
-        applyFontRecursively(this, DEFAULT_FONT);
+        applyFontRecursively(getContentPane(), DEFAULT_FONT);
         refreshArchetypeUi();
         if (networkClient == null) {
             startNewMatch(currentArchetype);
@@ -121,6 +247,10 @@ public class MageFightFrame extends JFrame {
         addWindowListener(new java.awt.event.WindowAdapter() {
             @Override
             public void windowClosing(java.awt.event.WindowEvent e) {
+                // 온라인 게임이면 서버 연결 종료
+                if (networkClient != null && networkClient.isConnected()) {
+                    networkClient.disconnect();
+                }
                 persistProgress();
             }
         });
@@ -138,18 +268,74 @@ public class MageFightFrame extends JFrame {
         UIManager.put("Panel.font", DEFAULT_FONT);
     }
 
+            private void configureSkillVisualRegistry() {
+            BattleRenderToolkit.clearRegisteredSkillVisuals();
+            for (SkillVisualProfile profile : presetFactory.createSkillVisualProfiles()) {
+                if (profile == null || profile.skillName() == null || profile.skillName().isBlank()) {
+                continue;
+                }
+                BattleRenderToolkit.ProjectileStyle style = null;
+                if (profile.style() != null) {
+                style = new BattleRenderToolkit.ProjectileStyle(
+                    parseHexColor(profile.style().coreColorHex(), new Color(255, 182, 86)),
+                    parseHexColor(profile.style().glowColorHex(), new Color(255, 220, 145)),
+                    parseHexColor(profile.style().trailColorHex(), new Color(255, 204, 133)),
+                    profile.style().launchStartProgress(),
+                    profile.style().launchDurationProgress(),
+                    profile.style().trailWidth(),
+                    profile.style().radius()
+                );
+                }
+                BattleRenderToolkit.registerSkillVisual(
+                    profile.skillName(),
+                    new BattleRenderToolkit.SkillVisualSpec(
+                        style,
+                        profile.projectileImagePath(),
+                        profile.projectileImageSize()
+                    )
+                );
+            }
+        }
+
     private void initUi() {
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
-        setSize(920, 640);
+        setSize(980, 660);
         setLocationRelativeTo(null);
         setFont(DEFAULT_FONT);
         setLayout(new BorderLayout(8, 8));
 
-        JPanel topPanel = new JPanel(new GridLayout(2, 1));
-        mapLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 16f));
-        turnLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 16f));
-        topPanel.add(mapLabel);
-        topPanel.add(turnLabel);
+        JPanel topPanel = new JPanel(new BorderLayout(6, 6));
+        JPanel topTextPanel = new JPanel(new GridLayout(2, 1));
+        mapLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 17f));
+        turnLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 15f));
+        topTextPanel.add(mapLabel);
+        topTextPanel.add(turnLabel);
+        topPanel.add(topTextPanel, BorderLayout.NORTH);
+
+        JPanel statusChipPanel = new JPanel();
+        statusChipPanel.setLayout(new BoxLayout(statusChipPanel, BoxLayout.X_AXIS));
+        statusChipPanel.setBackground(SURFACE_SOFT);
+        statusChipPanel.setBorder(BorderFactory.createEmptyBorder(6, 8, 6, 8));
+        styleStatusChip(turnOwnerChip, CHIP_BG, CHIP_TEXT);
+        styleStatusChip(timerChip, CHIP_BG, CHIP_TEXT);
+        styleStatusChip(readyChip, CHIP_WARN_BG, CHIP_WARN_TEXT);
+        styleStatusChip(connectionChip, CHIP_SUCCESS_BG, CHIP_SUCCESS_TEXT);
+        statusChipPanel.add(turnOwnerChip);
+        statusChipPanel.add(Box.createHorizontalStrut(8));
+        statusChipPanel.add(timerChip);
+        statusChipPanel.add(Box.createHorizontalStrut(8));
+        statusChipPanel.add(readyChip);
+        statusChipPanel.add(Box.createHorizontalStrut(8));
+        statusChipPanel.add(connectionChip);
+        statusChipPanel.add(Box.createHorizontalGlue());
+        topPanel.add(statusChipPanel, BorderLayout.SOUTH);
+
+        JPanel coreCardsPanel = new JPanel(new GridLayout(1, 4, 8, 8));
+        coreCardsPanel.add(createStatusCard("Core HP", coreHpLabel, new Color(242, 250, 255)));
+        coreCardsPanel.add(createStatusCard("Core EN", coreEnergyLabel, new Color(244, 255, 247)));
+        coreCardsPanel.add(createStatusCard("Core Range", coreRangeLabel, new Color(255, 249, 241)));
+        coreCardsPanel.add(createStatusCard("Core State", coreStateLabel, new Color(248, 244, 255)));
+        topPanel.add(coreCardsPanel, BorderLayout.CENTER);
         add(topPanel, BorderLayout.NORTH);
 
         JPanel centerPanel = new JPanel(new BorderLayout(8, 8));
@@ -157,16 +343,15 @@ public class MageFightFrame extends JFrame {
         centerPanel.add(firstPersonView, BorderLayout.CENTER);
 
         JPanel statusPanel = new JPanel(new GridLayout(1, 2, 10, 10));
-        statusPanel.add(createStatusCard("Player", playerLabel, new Color(235, 248, 255)));
-        statusPanel.add(createStatusCard("Bot", botLabel, new Color(255, 245, 238)));
+        statusPanel.add(createStatusCard("You", playerLabel, new Color(235, 248, 255)));
+        statusPanel.add(createStatusCard("Player", botLabel, new Color(255, 245, 238)));
         centerPanel.add(statusPanel, BorderLayout.SOUTH);
-        add(centerPanel, BorderLayout.CENTER);
 
         JPanel rightPanel = new JPanel(new BorderLayout(6, 6));
         cooldownArea.setEditable(false);
+        cooldownArea.setContentType("text/html");
         cooldownArea.setFont(DEFAULT_FONT);
-        cooldownArea.setLineWrap(true);
-        cooldownArea.setWrapStyleWord(true);
+        cooldownArea.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
 
         JPanel archetypePanel = new JPanel(new BorderLayout(6, 6));
         archetypePanel.setBorder(BorderFactory.createTitledBorder("Archetype (Unlock by Conditions)"));
@@ -175,14 +360,31 @@ public class MageFightFrame extends JFrame {
         pickPanel.setLayout(new BoxLayout(pickPanel, BoxLayout.X_AXIS));
         JButton newMatchBtn = new JButton("Start Match");
         JButton checkUnlockBtn = new JButton("Check Unlock");
+        configurePromotionReadyButton();
         pickPanel.add(archetypeCombo);
         pickPanel.add(newMatchBtn);
         pickPanel.add(checkUnlockBtn);
+        pickPanel.add(promotionReadyBtn);
         archetypePanel.add(pickPanel, BorderLayout.NORTH);
+
+        JPanel matchingPanel = new JPanel();
+        matchingPanel.setLayout(new BoxLayout(matchingPanel, BoxLayout.X_AXIS));
+        matchingPanel.setBorder(BorderFactory.createTitledBorder("Online Matchmaking"));
+        findGameBtn.addActionListener(e -> onFindGameRequested());
+        cancelMatchmakingBtn.addActionListener(e -> onCancelMatchmakingRequested());
+        cancelMatchmakingBtn.setEnabled(false);
+        matchingStatusLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 13f));
+        matchingStatusLabel.setForeground(new Color(100, 100, 100));
+        matchingPanel.add(findGameBtn);
+        matchingPanel.add(cancelMatchmakingBtn);
+        matchingPanel.add(Box.createHorizontalStrut(10));
+        matchingPanel.add(matchingStatusLabel);
+        archetypePanel.add(matchingPanel, BorderLayout.CENTER);
+        
         skillTreePanel.setNodeClickHandler(this::onSkillTreeNodeClicked);
         JScrollPane skillTreeScroll = new JScrollPane(skillTreePanel);
-        skillTreeScroll.setPreferredSize(new Dimension(360, 320));
-        skillTreeScroll.setMinimumSize(new Dimension(320, 260));
+        skillTreeScroll.setPreferredSize(new Dimension(280, 320));
+        skillTreeScroll.setMinimumSize(new Dimension(260, 240));
         skillTreeScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
         skillTreeScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         skillTreeScroll.getViewport().setBackground(new Color(16, 20, 32));
@@ -190,63 +392,279 @@ public class MageFightFrame extends JFrame {
 
         skillCombo.addActionListener(e -> firstPersonView.repaint());
 
-        rightPanel.setBorder(BorderFactory.createTitledBorder("Battle Info"));
-        rightPanel.add(archetypePanel, BorderLayout.NORTH);
+        rightPanel.setBorder(BorderFactory.createTitledBorder("Battle Hub"));
+        rightPanel.setPreferredSize(new Dimension(320, 10));
+        rightPanel.setMinimumSize(new Dimension(280, 10));
+
+        JTabbedPane infoTabs = new JTabbedPane();
+        infoTabs.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 13f));
+        infoTabs.addTab("Progress", archetypePanel);
+
         JScrollPane cooldownScroll = new JScrollPane(cooldownArea);
         cooldownScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-        rightPanel.add(cooldownScroll, BorderLayout.CENTER);
+        infoTabs.addTab("Skills", cooldownScroll);
 
-        newMatchBtn.addActionListener(e -> {
-            MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
-            if (selected == null) {
-                log("선택 가능한 아키타입이 없습니다.");
-                return;
-            }
-            if (!progress.hasSelectedArchetype()) {
-                if (!ArchetypeUnlockService.trySelect(selected, progress)) {
-                    log("호칭 선택 실패: " + ArchetypeUnlockService.lockReason(selected, progress).orElse("조건 불일치"));
-                    refreshArchetypeUi();
-                    return;
-                }
-                log("호칭 선택: " + selected.displayName() + " (Tier " + selected.tier() + ")");
-                persistProgress();
-            } else if (!progress.isSelected(selected)) {
-                log("이미 호칭이 고정되어 변경할 수 없습니다: " + progress.selectedArchetype().displayName());
-                return;
-            }
-            startNewMatch(selected);
-        });
-
-        checkUnlockBtn.addActionListener(e -> {
-            List<MageArchetype> selectable = ArchetypeUnlockService.autoUnlockEligible(progress);
-            if (selectable.isEmpty()) {
-                if (progress.selectedArchetype() != null) {
-                    log("이미 선택된 호칭: " + progress.selectedArchetype().displayName());
-                } else {
-                    log("현재 선택 가능한 호칭이 없습니다.");
-                }
-            } else {
-                for (MageArchetype archetype : selectable) {
-                    log("선택 가능: " + archetype.displayName() + " (Tier " + archetype.tier() + ")");
-                }
-            }
-            refreshArchetypeUi();
-        });
-
-        add(rightPanel, BorderLayout.EAST);
-
-        JPanel bottomPanel = new JPanel(new BorderLayout(8, 8));
-        bottomPanel.add(createControlPanel(), BorderLayout.NORTH);
-
+        JPanel logTabPanel = new JPanel(new BorderLayout(6, 6));
+        JPanel logTopPanel = new JPanel(new BorderLayout(0, 6));
+        logSummaryLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
+        logSummaryLabel.setOpaque(true);
+        logSummaryLabel.setBackground(new Color(243, 247, 255));
+        logSummaryLabel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(214, 223, 237)),
+            BorderFactory.createEmptyBorder(6, 8, 6, 8)
+        ));
+        logTopPanel.add(logSummaryLabel, BorderLayout.NORTH);
+        logTopPanel.add(createLogFilterPanel(), BorderLayout.SOUTH);
+        logTabPanel.add(logTopPanel, BorderLayout.NORTH);
         logArea.setEditable(false);
         logArea.setFont(DEFAULT_FONT);
         logArea.setLineWrap(true);
-        logArea.setRows(8);
+        logArea.setRows(10);
         logArea.setWrapStyleWord(true);
         JScrollPane logScroll = new JScrollPane(logArea);
         logScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS);
-        bottomPanel.add(logScroll, BorderLayout.CENTER);
-        add(bottomPanel, BorderLayout.SOUTH);
+        logTabPanel.add(logScroll, BorderLayout.CENTER);
+        infoTabs.addTab("Log", logTabPanel);
+
+        rightPanel.add(infoTabs, BorderLayout.CENTER);
+
+        newMatchBtn.addActionListener(e -> onStartMatchRequested());
+        checkUnlockBtn.addActionListener(e -> onCheckUnlockRequested());
+        promotionReadyBtn.addActionListener(e -> onPromotionReadyRequested());
+
+        JSplitPane battleSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, centerPanel, rightPanel);
+        battleSplitPane.setResizeWeight(0.74);
+        battleSplitPane.setContinuousLayout(true);
+        battleSplitPane.setOneTouchExpandable(true);
+        battleSplitPane.setDividerSize(8);
+        battleSplitPane.setDividerLocation(0.74);
+        add(battleSplitPane, BorderLayout.CENTER);
+
+        add(createControlPanel(), BorderLayout.SOUTH);
+    }
+
+    private void configurePromotionReadyButton() {
+        promotionReadyBtn.setVisible(false);
+        promotionReadyBtn.setFocusable(false);
+        promotionReadyBtn.setOpaque(true);
+        promotionReadyBtn.setBackground(new Color(255, 241, 166));
+        promotionReadyBtn.setToolTipText("조건을 이미 만족했습니다. 원할 때 승급하세요.");
+    }
+
+    private void onStartMatchRequested() {
+        MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
+        if (selected == null) {
+            log("선택 가능한 아키타입이 없습니다.");
+            return;
+        }
+        if (!tryApplySelectedArchetype(selected)) {
+            refreshArchetypeUi();
+            return;
+        }
+        startNewMatch(selected);
+    }
+
+    private boolean tryApplySelectedArchetype(MageArchetype selected) {
+        boolean hadSelection = progress.hasSelectedArchetype();
+        if (progress.isSelected(selected)) {
+            return true;
+        }
+        if (!ArchetypeUnlockService.trySelect(selected, progress)) {
+            String message = hadSelection ? "승급 실패: " : "호칭 선택 실패: ";
+            log(message + ArchetypeUnlockService.lockReason(selected, progress).orElse("조건 불일치"));
+            return false;
+        }
+        String message = hadSelection ? "호칭 승급: " : "호칭 선택: ";
+        log(message + selected.displayName() + " (Tier " + selected.tier() + ")");
+        persistProgress();
+        return true;
+    }
+
+    private void onCheckUnlockRequested() {
+        List<MageArchetype> selectable = ArchetypeUnlockService.autoUnlockEligible(progress);
+        if (selectable.isEmpty()) {
+            if (progress.selectedArchetype() != null) {
+                log("이미 선택된 호칭: " + progress.selectedArchetype().displayName());
+            } else {
+                log("현재 선택 가능한 호칭이 없습니다.");
+            }
+        } else {
+            for (MageArchetype archetype : selectable) {
+                log("선택 가능: " + archetype.displayName() + " (Tier " + archetype.tier() + ")");
+            }
+        }
+        refreshArchetypeUi();
+    }
+
+    private void onFindGameRequested() {
+        if (networkClient == null || !networkClient.isConnected()) {
+            setActionFeedback("서버에 연결되지 않았습니다.", true);
+            log(LogCategory.SYSTEM, "오류: 서버 연결이 필요합니다.");
+            return;
+        }
+
+        if (networkClient.getMatchState() == GameNetworkClient.MatchState.SEARCHING) {
+            setActionFeedback("이미 상대를 찾고 있습니다.", false);
+            return;
+        }
+
+        MageArchetype archetype = progress.selectedArchetype();
+        if (archetype == null) {
+            setActionFeedback("게임을 시작하기 전에 직업을 선택하세요.", true);
+            return;
+        }
+
+        FighterSpec onlineSpec = presetFactory.createPlayerSpec(archetype, progress);
+
+        setActionFeedback("상대 찾는 중...", false);
+        networkClient.findGame(
+                resolveOnlineNickname(),
+                toServerCharacterType(archetype),
+                accountId,
+                resolveCharacterDisplayName(),
+                buildOnlineSkillPayload(onlineSpec),
+                resolveTurnEnergyCap(archetype)
+        );
+    }
+
+    private List<Map<String, Object>> buildOnlineSkillPayload(FighterSpec spec) {
+        if (spec == null || spec.skills() == null || spec.skills().isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> payload = new ArrayList<>();
+        for (SkillTemplate skill : spec.skills()) {
+            Map<String, Object> skillPayload = new HashMap<>();
+            skillPayload.put("name", skill.name());
+            skillPayload.put("baseDamage", skill.baseDamage());
+            skillPayload.put("cooldownTurns", skill.cooldownTurns());
+            skillPayload.put("baseSuccessProbability", skill.baseSuccessProbability());
+            skillPayload.put("failEnergyCost", skill.failEnergyCost());
+            skillPayload.put("successEnergyCost", skill.successEnergyCost());
+            skillPayload.put("prepareCastMs", skill.prepareCastMs());
+            skillPayload.put("isDefenseSkill", skill.isDefenseSkill());
+            skillPayload.put("evadeDurationMs", skill.evadeDurationMs());
+
+            Map<String, Object> effectPayload = new HashMap<>();
+            effectPayload.put("areaType", skill.effect().areaType().name());
+            effectPayload.put("areaRadius", skill.effect().areaRadius());
+            effectPayload.put("durationTurns", skill.effect().durationTurns());
+            effectPayload.put("areaPatternRows", skill.effect().areaPatternRows());
+            skillPayload.put("effect", effectPayload);
+
+            payload.add(skillPayload);
+        }
+        return List.copyOf(payload);
+    }
+
+    private int resolveTurnEnergyCap(MageArchetype archetype) {
+        if (archetype == null) {
+            return 6;
+        }
+        return switch (archetype) {
+            case APPRENTICE -> 6;
+            case ELEMENTALIST -> 8;
+            case RUNE_SCHOLAR -> 10;
+        };
+    }
+
+    private String resolveOnlineNickname() {
+        if (accountId == null || accountId.isBlank()) {
+            return "Player";
+        }
+        return accountStore.nickname(accountId).orElse(accountId);
+    }
+
+    private String toServerCharacterType(MageArchetype archetype) {
+        if (archetype == null) {
+            return "WARRIOR";
+        }
+        return switch (archetype) {
+            case APPRENTICE, ELEMENTALIST, RUNE_SCHOLAR -> "MAGE";
+        };
+    }
+
+    private String resolveCharacterDisplayName() {
+        if (accountId == null || accountId.isBlank()) {
+            return currentPlayerDisplayName();
+        }
+        return accountStore.characterProfile(accountId)
+                .map(AccountStore.CharacterProfile::displayName)
+                .orElse(resolveOnlineNickname());
+    }
+
+    private void onCancelMatchmakingRequested() {
+        if (networkClient == null) {
+            return;
+        }
+
+        if (networkClient.getMatchState() != GameNetworkClient.MatchState.SEARCHING) {
+            return;
+        }
+
+        networkClient.cancelMatchmaking();
+        setActionFeedback("매칭이 취소되었습니다.", false);
+        log(LogCategory.SYSTEM, "매칭 취소됨");
+    }
+
+    private void startMatchingTimeoutTimer() {
+        stopMatchingTimeoutTimer();
+        matchingTimeoutTimer = new Timer(1000, e -> {
+            long elapsedMs = networkClient.getMatchSearchElapsedMs();
+            long remainingSeconds = (MATCHMAKING_TIMEOUT_MS - elapsedMs) / 1000;
+
+            if (remainingSeconds <= 0) {
+                handleMatchingTimeout();
+            } else {
+                matchingStatusLabel.setText("Searching... (" + remainingSeconds + "s)");
+            }
+        });
+        matchingTimeoutTimer.setRepeats(true);
+        matchingTimeoutTimer.start();
+    }
+
+    private void stopMatchingTimeoutTimer() {
+        if (matchingTimeoutTimer != null) {
+            matchingTimeoutTimer.stop();
+            matchingTimeoutTimer = null;
+        }
+    }
+
+    private void handleMatchingTimeout() {
+        stopMatchingTimeoutTimer();
+
+        if (networkClient.getMatchState() != GameNetworkClient.MatchState.SEARCHING) {
+            return;
+        }
+
+        networkClient.cancelMatchmaking();
+        log(LogCategory.SYSTEM, "매칭 시간 초과 (60초)");
+        setActionFeedback("매칭 시간이 초과되었습니다. 다시 시도하세요.", true);
+
+        JOptionPane.showMessageDialog(
+                this,
+                "No opponent found within 60 seconds.\nPlease try again.",
+                "Matchmaking Timeout",
+                JOptionPane.INFORMATION_MESSAGE
+        );
+    }
+
+    private void onPromotionReadyRequested() {
+        if (pendingPromotionTarget == null || !canOfferPromotion(pendingPromotionTarget)) {
+            log("현재는 승급 조건을 만족하지 않습니다.");
+            updatePromotionReadyButton();
+            return;
+        }
+        int choice = JOptionPane.showConfirmDialog(
+                this,
+                pendingPromotionTarget.displayName() + "로 승급하시겠습니까?",
+                "MageFight",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.INFORMATION_MESSAGE
+        );
+        if (choice == JOptionPane.YES_OPTION) {
+            promoteToArchetype(pendingPromotionTarget,
+                    "새로운 길을 받아들였다. 호칭이 " + pendingPromotionTarget.displayName() + "로 승급되었습니다.");
+        }
     }
 
     private JPanel createStatusCard(String title, JLabel contentLabel, Color bg) {
@@ -259,28 +677,67 @@ public class MageFightFrame extends JFrame {
         return panel;
     }
 
-    private JPanel createControlPanel() {
+    private void styleStatusChip(JLabel label, Color bg, Color fg) {
+        label.setOpaque(true);
+        label.setBackground(bg);
+        label.setForeground(fg);
+        label.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(214, 223, 237)),
+                BorderFactory.createEmptyBorder(4, 10, 4, 10)
+        ));
+        label.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
+        label.setText("-");
+    }
+
+    private JPanel createLogFilterPanel() {
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.X_AXIS));
+        panel.setBorder(BorderFactory.createTitledBorder("Log Filters"));
+
+        actionLogFilter.addActionListener(e -> refreshLogArea());
+        combatLogFilter.addActionListener(e -> refreshLogArea());
+        progressionLogFilter.addActionListener(e -> refreshLogArea());
+        systemLogFilter.addActionListener(e -> refreshLogArea());
+
+        panel.add(actionLogFilter);
+        panel.add(combatLogFilter);
+        panel.add(progressionLogFilter);
+        panel.add(systemLogFilter);
+        return panel;
+    }
+
+    private JPanel createControlPanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 4));
+        JPanel actionRow = new JPanel();
+        actionRow.setLayout(new BoxLayout(actionRow, BoxLayout.X_AXIS));
 
         JButton attackBtn = new JButton("Attack");
         JButton defendBtn = new JButton("Defend");
         JButton moveBtn = new JButton("Move");
         JButton skillBtn = new JButton("Use Skill");
         JButton endTurnBtn = new JButton("End Turn");
+        JButton surrenderBtn = new JButton("Surrender");
 
         attackBtn.addActionListener(e -> onAttack());
         defendBtn.addActionListener(e -> onDefend());
         moveBtn.addActionListener(e -> onMove());
         skillBtn.addActionListener(e -> onUseSkill());
         endTurnBtn.addActionListener(e -> onEndTurn());
+        surrenderBtn.addActionListener(e -> onSurrender());
 
-        panel.add(attackBtn);
-        panel.add(defendBtn);
-        panel.add(moveBtn);
-        panel.add(skillCombo);
-        panel.add(skillBtn);
-        panel.add(endTurnBtn);
+        actionRow.add(attackBtn);
+        actionRow.add(defendBtn);
+        actionRow.add(moveBtn);
+        actionRow.add(skillCombo);
+        actionRow.add(skillBtn);
+        actionRow.add(endTurnBtn);
+        actionRow.add(surrenderBtn);
+
+        actionFeedbackLabel.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
+        actionFeedbackLabel.setForeground(new Color(36, 84, 165));
+
+        panel.add(actionRow, BorderLayout.CENTER);
+        panel.add(actionFeedbackLabel, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -291,12 +748,14 @@ public class MageFightFrame extends JFrame {
 
         Optional<MoveDirection> direction = promptMoveDirection();
         if (direction.isEmpty()) {
+            setActionFeedback("이동이 취소되었습니다.", false);
             return;
         }
 
         boolean moved = tryMoveInDirection(PLAYER_ID, direction.get(), "Player");
         if (!moved) {
             log("이동할 수 없습니다. (범위, 점유, 에너지, 쿨타임 확인)");
+            setActionFeedback("이동 실패: 범위/점유/에너지를 확인하세요.", true);
         }
     }
 
@@ -304,8 +763,8 @@ public class MageFightFrame extends JFrame {
         if (!validateMyTurn()) {
             return;
         }
-        int damage = 5 + playerSpec.attackBonus();
-        executeAction(new AttackAction(PLAYER_ID, BOT_ID, damage), "Player uses Attack for " + damage + " dmg.");
+        int damage = 5 + (playerSpec == null ? 0 : playerSpec.attackBonus());
+        executeAction(new AttackAction(PLAYER_ID, resolveTargetId(), damage), "Player uses Attack for " + damage + " dmg.");
     }
 
     private void onDefend() {
@@ -321,22 +780,55 @@ public class MageFightFrame extends JFrame {
         }
 
         String skillName = String.valueOf(skillCombo.getSelectedItem());
-        SkillTemplate skill = findSkill(playerSpec, skillName);
+        if (skillName == null || skillName.isBlank()) {
+            log("사용 가능한 스킬이 없습니다.");
+            setActionFeedback("스킬 실패: 사용 가능한 스킬이 없습니다.", true);
+            return;
+        }
+
+        SkillTemplate selectedSkill = resolveSelectedSkillTemplate(skillName);
+        if (requiresTileAim(selectedSkill)) {
+            pendingAimedSkillName = skillName;
+            setActionFeedback("조준 모드: 맵에서 타일을 클릭하세요.", false);
+            log(LogCategory.ACTION, skillName + " 조준 대기 중 (맵 클릭)");
+            firstPersonView.repaint();
+            return;
+        }
+
+        executePlayerSkillCast(selectedSkill, Optional.empty());
+    }
+
+    private void executePlayerSkillCast(SkillTemplate skill, Optional<MapCellPosition> aimedCell) {
         if (skill == null) {
-            log("Skill not found: " + skillName);
+            String selected = String.valueOf(skillCombo.getSelectedItem());
+            log("Skill not found: " + selected);
+            setActionFeedback("스킬 실패: 스킬 정보를 찾을 수 없습니다.", true);
+            return;
+        }
+
+        if (networkClient != null && networkClient.isConnected()) {
+            UseSkillAction action = aimedCell
+                    .map(cell -> new UseSkillAction(PLAYER_ID, resolveTargetId(), skill.name(), 0, cell.col(), cell.row()))
+                    .orElseGet(() -> new UseSkillAction(PLAYER_ID, resolveTargetId(), skill.name(), 0));
+            executeAction(action,
+                    "Player casts " + skill.name() + ".");
             return;
         }
 
         int remain = cooldowns.get(PLAYER_ID).getOrDefault(skill.name(), 0);
         if (remain > 0) {
             log("Skill " + skill.name() + " is on cooldown: " + remain + " turns left.");
+            setActionFeedback("스킬 실패: 쿨다운 " + remain + "턴 남음", true);
             return;
         }
 
         int damage = Math.max(5, Math.min(80, 10 + playerSpec.attackBonus() + skill.baseDamage()));
-        cooldowns.get(PLAYER_ID).put(skill.name(), skill.cooldownTurns());
-        if (executeAction(new UseSkillAction(PLAYER_ID, BOT_ID, skill.name(), damage),
+        UseSkillAction action = aimedCell
+                .map(cell -> new UseSkillAction(PLAYER_ID, BOT_ID, skill.name(), damage, cell.col(), cell.row()))
+                .orElseGet(() -> new UseSkillAction(PLAYER_ID, BOT_ID, skill.name(), damage));
+        if (executeAction(action,
                 "Player casts " + skill.name() + " for " + damage + " dmg.")) {
+            cooldowns.get(PLAYER_ID).put(skill.name(), skill.cooldownTurns());
             int gainedLevels = progress.recordSkillUse(skill.name());
             if (gainedLevels > 0) {
                 log(skill.name() + " mastery increased by " + gainedLevels + "; inspiration +" + gainedLevels + ".");
@@ -347,14 +839,106 @@ public class MageFightFrame extends JFrame {
         }
     }
 
+    private String resolveTargetId() {
+        if (networkClient != null && networkClient.isConnected() && onlineOpponentId != null && !onlineOpponentId.isBlank()) {
+            return onlineOpponentId;
+        }
+        return BOT_ID;
+    }
+
+    private SkillTemplate resolveSelectedSkillTemplate(String skillName) {
+        SkillTemplate fromSpec = findSkill(playerSpec, skillName);
+        if (fromSpec != null) {
+            return fromSpec;
+        }
+        if (session == null) {
+            return null;
+        }
+        return session.getSkillTemplate(skillName).orElse(null);
+    }
+
+    private boolean requiresTileAim(SkillTemplate skill) {
+        if (skill == null) {
+            return false;
+        }
+        return TILE_AIM_SKILLS.stream().anyMatch(name -> name.equalsIgnoreCase(skill.name()));
+    }
+
+    @Override
+    public void onBattleCellClicked(int worldCol, int worldRow) {
+        if (pendingAimedSkillName == null || pendingAimedSkillName.isBlank()) {
+            return;
+        }
+        if (!validateMyTurn()) {
+            pendingAimedSkillName = null;
+            return;
+        }
+
+        SkillTemplate skill = resolveSelectedSkillTemplate(pendingAimedSkillName);
+        if (skill == null) {
+            setActionFeedback("조준 실패: 스킬 정보를 찾을 수 없습니다.", true);
+            pendingAimedSkillName = null;
+            return;
+        }
+
+        Optional<MapCellPosition> actorPosOpt = displayedPositionOf(PLAYER_ID);
+        if (actorPosOpt.isEmpty()) {
+            setActionFeedback("조준 실패: 현재 위치를 확인할 수 없습니다.", true);
+            pendingAimedSkillName = null;
+            return;
+        }
+
+        MapCellPosition aimedCell = new MapCellPosition(worldCol, worldRow);
+        boolean inRange = BattleRenderToolkit.isSkillInRangeForEffect(skill, actorPosOpt.get(), aimedCell);
+        if (!inRange) {
+            setActionFeedback("유효 범위의 타일을 클릭하세요.", true);
+            return;
+        }
+
+        pendingAimedSkillName = null;
+        executePlayerSkillCast(skill, Optional.of(aimedCell));
+    }
+
     private void onEndTurn() {
         if (!validateMyTurn()) {
             return;
         }
         if (executeAction(new EndTurnAction(PLAYER_ID), "Player ends turn.")) {
             refreshUi();
-            scheduleBotTurn();
+            if (networkClient == null || !networkClient.isConnected()) {
+                scheduleBotTurn();
+            }
         }
+    }
+
+    private void onSurrender() {
+        if (battleReturnHandled) {
+            return;
+        }
+
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "정말 기권하시겠습니까?",
+                "Surrender",
+                JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE);
+        if (confirm != JOptionPane.YES_OPTION) {
+            setActionFeedback("기권이 취소되었습니다.", false);
+            return;
+        }
+
+        battleReturnHandled = true;
+        log("플레이어가 기권했습니다.");
+        setActionFeedback("기권 처리됨", true);
+
+        if (networkClient != null && networkClient.isConnected()) {
+            networkClient.disconnect();
+        }
+
+        SwingUtilities.invokeLater(() -> {
+            JOptionPane.showMessageDialog(this, "You surrendered.", "Result", JOptionPane.INFORMATION_MESSAGE);
+            dispose();
+        });
     }
 
     private boolean executeAction(GameAction action, String logLine) {
@@ -362,24 +946,35 @@ public class MageFightFrame extends JFrame {
             // 온라인 게임: 네트워크로 전송
             if (networkClient != null && networkClient.isConnected()) {
                 sendNetworkAction(action, logLine);
+                setActionFeedback("행동 전송됨: " + actionName(action), false);
                 return true;
             }
 
             // 로컬 게임: 세션에 전송
             session.submitAction(action);
-            if (session.consumeWindowAdvancedFlag()) {
+            boolean windowAdvanced = session.consumeWindowAdvancedFlag();
+            if (windowAdvanced) {
                 tickCooldowns(PLAYER_ID);
                 tickCooldowns(BOT_ID);
                 log("Window advanced -> cooldowns ticked.");
             }
             log(logLine);
-            refreshUi();
-            if (session.isFinished()) {
-                showWinner();
+            setActionFeedback("행동 수락됨: " + actionName(action), false);
+            int resolvedWindowIndex = session.getLastResolvedWindowIndex();
+            boolean hasNewResolution = resolvedWindowIndex > lastPlayedResolvedWindowIndex;
+            if (hasNewResolution) {
+                lastPlayedResolvedWindowIndex = resolvedWindowIndex;
+                playResolutionSteps(session.snapshotLastResolutionSteps());
+            } else {
+                refreshUi();
+                if (session.isFinished()) {
+                    showWinner();
+                }
             }
             return true;
         } catch (RuntimeException ex) {
             log("Action rejected: " + ex.getMessage());
+            setActionFeedback("행동 거부: " + ex.getMessage(), true);
             return false;
         }
     }
@@ -388,10 +983,10 @@ public class MageFightFrame extends JFrame {
         try {
             if (action instanceof AttackAction attack) {
                 networkClient.attack(attack.targetId(), attack.damage());
-            } else if (action instanceof DefendAction defend) {
+            } else if (action instanceof DefendAction) {
                 networkClient.defend("Defend");
             } else if (action instanceof UseSkillAction skill) {
-                networkClient.useSkill(skill.targetId(), skill.skillName());
+                networkClient.useSkill(skill.targetId(), skill.skillName(), skill.targetCol(), skill.targetRow());
             } else if (action instanceof MoveAction move) {
                 networkClient.move(move.targetCol(), move.targetRow());
             } else if (action instanceof EndTurnAction) {
@@ -400,6 +995,7 @@ public class MageFightFrame extends JFrame {
             log(logLine);
         } catch (Exception e) {
             log("Network action failed: " + e.getMessage());
+            setActionFeedback("네트워크 전송 실패: " + e.getMessage(), true);
         }
     }
 
@@ -412,10 +1008,17 @@ public class MageFightFrame extends JFrame {
         // 로컬 게임: 세션 검증
         if (session.isFinished()) {
             showWinner();
+            setActionFeedback("게임이 종료되었습니다.", true);
+            return false;
+        }
+        if (resolutionPlaybackActive) {
+            log("행동 정산 연출 중입니다. 잠시만 기다려주세요.");
+            setActionFeedback("정산 연출 중에는 행동할 수 없습니다.", true);
             return false;
         }
         if (session.isPlayerReady(PLAYER_ID)) {
             log("이미 준비 완료 상태입니다. 다음 윈도우를 기다리세요.");
+            setActionFeedback("이미 준비 완료 상태입니다.", true);
             return false;
         }
         return true;
@@ -428,6 +1031,9 @@ public class MageFightFrame extends JFrame {
     }
 
     private void runBotTurn() {
+        if (botSpec == null) {
+            return;
+        }
         if (session.isFinished() || session.isPlayerReady(BOT_ID)) {
             return;
         }
@@ -483,7 +1089,8 @@ public class MageFightFrame extends JFrame {
         return map;
     }
 
-    private SkillTemplate findSkill(FighterSpec spec, String skillName) {
+    @Override
+    public SkillTemplate findSkill(FighterSpec spec, String skillName) {
         return spec.skills().stream()
                 .filter(s -> s.name().equalsIgnoreCase(skillName))
                 .findFirst()
@@ -491,50 +1098,336 @@ public class MageFightFrame extends JFrame {
     }
 
     private void refreshUi() {
+        if (session == null) {
+            return;
+        }
         PlayerState p1 = session.getPlayerState(PLAYER_ID);
         PlayerState p2 = session.getPlayerState(BOT_ID);
-        String p1Pos = session.getPlayerPosition(PLAYER_ID).map(pos -> pos.col() + "," + pos.row()).orElse("?,?");
-        String p2Pos = session.getPlayerPosition(BOT_ID).map(pos -> pos.col() + "," + pos.row()).orElse("?,?");
+        int displayedP1Hp = displayedHpOf(PLAYER_ID, p1.hp());
+        int displayedP2Hp = displayedHpOf(BOT_ID, p2.hp());
+        String p1Pos = displayedPositionOf(PLAYER_ID)
+                .map(pos -> pos.col() + "," + pos.row())
+                .orElse("?,?");
+        String p2Pos = displayedPositionOf(BOT_ID)
+                .map(pos -> pos.col() + "," + pos.row())
+                .orElse("?,?");
+        boolean onlineMode = networkClient != null && networkClient.isConnected();
 
         mapLabel.setText("Map: " + combatMap.name());
-        turnLabel.setText("Window: " + session.getCurrentWindowIndex() + " | Ready: " + session.getReadyPlayers());
+        if (onlineMode) {
+            turnLabel.setText(onlineTurnText());
+        } else {
+            String baseTurnText = "Window: " + session.getCurrentWindowIndex() + " | Ready: " + session.getReadyPlayers();
+            if (resolutionPlaybackActive) {
+                baseTurnText += " | Resolving step " + resolutionPlaybackStepIndex;
+            }
+            turnLabel.setText(baseTurnText);
+        }
 
-        playerLabel.setText("HP=" + p1.hp() + "/" + p1.maxHp()
-            + " | EN=" + p1.energy() + "/" + p1.maxEnergy()
-            + " | TurnEN=" + (p1.maxEnergySpendPerWindow() == Integer.MAX_VALUE ? "∞/∞" : Math.max(0, p1.maxEnergySpendPerWindow() - p1.energySpentInWindow()) + "/" + p1.maxEnergySpendPerWindow())
-            + " | Defending=" + p1.isDefending()
-            + " | Pos=" + p1Pos
-            + " | Class=" + playerSpec.title());
-        botLabel.setText("HP=" + p2.hp() + "/" + p2.maxHp()
-            + " | EN=" + p2.energy() + "/" + p2.maxEnergy()
-            + " | TurnEN=" + (p2.maxEnergySpendPerWindow() == Integer.MAX_VALUE ? "∞/∞" : Math.max(0, p2.maxEnergySpendPerWindow() - p2.energySpentInWindow()) + "/" + p2.maxEnergySpendPerWindow())
-            + " | Defending=" + p2.isDefending()
-            + " | Pos=" + p2Pos
-            + " | Class=" + botSpec.title());
+        updateTopStatusChips(onlineMode);
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("Player skills\n");
-        appendCooldowns(sb, PLAYER_ID, playerSpec);
-        sb.append("\nBot skills\n");
-        appendCooldowns(sb, BOT_ID, botSpec);
-        cooldownArea.setText(sb.toString());
+        String myTurnEnergy = formatTurnEnergy(p1);
+        String meLabel = currentPlayerDisplayName();
+        String oppLabel = currentOpponentDisplayName();
+
+        playerLabel.setText("<html><b>" + meLabel + "</b>"
+                + "<br/>HP " + displayedP1Hp + "/" + p1.maxHp() + " | EN " + p1.energy() + "/" + p1.maxEnergy()
+                + " | TurnEN " + myTurnEnergy
+                + "<br/>Class " + (playerSpec == null ? "Unknown" : playerSpec.title())
+                + " | Pos " + p1Pos
+                + " | Def " + (p1.isDefending() ? "ON" : "OFF")
+                + "</html>");
+        if (onlineMode) {
+            botLabel.setText("<html><b>" + oppLabel + "</b>"
+                    + "<br/>HP " + displayedP2Hp + "/" + p2.maxHp()
+                    + "<br/>Online battle visibility: minimal</html>");
+        } else {
+            botLabel.setText("<html><b>" + oppLabel + "</b>"
+                    + "<br/>HP " + displayedP2Hp + "/" + p2.maxHp() + " | EN " + p2.energy() + "/" + p2.maxEnergy()
+                    + " | TurnEN " + formatTurnEnergy(p2)
+                    + "<br/>Class " + (botSpec == null ? "Unknown" : botSpec.title())
+                    + " | Pos " + p2Pos
+                    + " | Def " + (p2.isDefending() ? "ON" : "OFF")
+                    + "</html>");
+        }
+
+        coreHpLabel.setText("YOU " + displayedP1Hp + "/" + p1.maxHp()
+            + " | " + (onlineMode ? "PLAYER " : "BOT ") + displayedP2Hp + "/" + p2.maxHp());
+        coreEnergyLabel.setText("YOU " + p1.energy() + "/" + p1.maxEnergy() + " | Turn " + formatTurnEnergy(p1));
+        int distance = distanceBetween(PLAYER_ID, BOT_ID);
+        String selectedSkill = String.valueOf(skillCombo.getSelectedItem());
+        coreRangeLabel.setText("Dist " + (distance < 0 ? "?" : distance) + " | Skill " + (selectedSkill == null ? "-" : selectedSkill));
+        if (onlineMode) {
+            coreStateLabel.setText("ONLINE"
+                + (resolutionPlaybackActive ? " | Resolving" : " | Action Ready")
+                + (onlineOpponentReady ? " | OppReady YES" : " | OppReady NO"));
+        } else {
+            coreStateLabel.setText("LOCAL" + (resolutionPlaybackActive ? " | Resolving" : " | Action Ready"));
+        }
+
+        cooldownArea.setText(buildSkillsHtml(onlineMode));
         firstPersonView.repaint();
         skillTreePanel.repaint();
     }
 
-    private void appendCooldowns(StringBuilder sb, String playerId, FighterSpec spec) {
-        Map<String, Integer> cdMap = cooldowns.get(playerId);
-        for (SkillTemplate skill : spec.skills()) {
-            int remain = cdMap.getOrDefault(skill.name(), 0);
-            sb.append("- ").append(skill.name())
-                    .append(" (cd ").append(skill.cooldownTurns())
-                    .append(") => ").append(remain).append("\n");
+    private String formatTurnEnergy(PlayerState state) {
+        if (state.maxEnergySpendPerWindow() == Integer.MAX_VALUE) {
+            int fallbackCap = 6;
+            int remain = Math.max(0, fallbackCap - Math.max(0, state.energySpentInWindow()));
+            return remain + "/" + fallbackCap;
+        }
+        int remain = Math.max(0, state.maxEnergySpendPerWindow() - state.energySpentInWindow());
+        return remain + "/" + state.maxEnergySpendPerWindow();
+    }
+
+    private void updateTopStatusChips(boolean onlineMode) {
+        if (onlineMode) {
+            String myId = networkClient == null ? "" : String.valueOf(networkClient.getMyPlayerId());
+            boolean myTurn = !myId.isBlank() && myId.equals(onlineTurnPlayerId);
+            long remainingMs = Math.max(0L, onlineWindowDeadlineMs - System.currentTimeMillis());
+            turnOwnerChip.setText(myTurn ? "TURN: YOU" : "TURN: OPPONENT");
+            timerChip.setText("TIMER: " + (remainingMs / 1000L) + "s");
+            readyChip.setText(onlineOpponentReady ? "OPP READY" : "OPP THINKING");
+            connectionChip.setText(networkClient != null && networkClient.isConnected() ? "NET: CONNECTED" : "NET: DISCONNECTED");
+        } else {
+            turnOwnerChip.setText("TURN: WINDOW " + session.getCurrentWindowIndex());
+            timerChip.setText("READY: " + session.getReadyPlayers().size());
+            readyChip.setText("LOCAL MATCH");
+            connectionChip.setText("NET: OFFLINE");
         }
     }
 
+    private int distanceBetween(String actorId, String targetId) {
+        Optional<MapCellPosition> a = displayedPositionOf(actorId);
+        Optional<MapCellPosition> b = displayedPositionOf(targetId);
+        if (a.isEmpty() || b.isEmpty()) {
+            return -1;
+        }
+        return Math.abs(a.get().col() - b.get().col()) + Math.abs(a.get().row() - b.get().row());
+    }
+
+    private String buildSkillsHtml(boolean onlineMode) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<html><body style='font-family:Malgun Gothic; font-size:12px; margin:8px;'>");
+        sb.append("<div style='font-weight:bold; font-size:13px; margin-bottom:6px;'>Player Skills</div>");
+        if (playerSpec != null) {
+            appendCooldownsHtml(sb, PLAYER_ID, playerSpec);
+        } else {
+            sb.append("<div style='color:#64748B; margin-bottom:8px;'>- synced from server</div>");
+        }
+
+        sb.append("<div style='font-weight:bold; font-size:13px; margin:10px 0 6px 0;'>Opponent Skills</div>");
+        if (onlineMode) {
+            sb.append("<div style='color:#64748B;'>- hidden in online battle</div>");
+        } else if (botSpec != null) {
+            appendCooldownsHtml(sb, BOT_ID, botSpec);
+        } else {
+            sb.append("<div style='color:#64748B;'>- synced from server</div>");
+        }
+
+        sb.append("</body></html>");
+        return sb.toString();
+    }
+
+    private void appendCooldownsHtml(StringBuilder sb, String playerId, FighterSpec spec) {
+        Map<String, Integer> cdMap = cooldowns.getOrDefault(playerId, Map.of());
+        for (SkillTemplate skill : spec.skills()) {
+            int remain = cdMap.getOrDefault(skill.name(), 0);
+            String stateLabel;
+            String stateBg;
+            String stateFg;
+            if (remain <= 0) {
+                stateLabel = "READY";
+                stateBg = "#DCFCE7";
+                stateFg = "#166534";
+            } else if (remain == 1) {
+                stateLabel = "SOON";
+                stateBg = "#FEF3C7";
+                stateFg = "#92400E";
+            } else {
+                stateLabel = "COOLDOWN";
+                stateBg = "#E5E7EB";
+                stateFg = "#374151";
+            }
+
+            sb.append("<div style='padding:6px 8px; margin:4px 0; border:1px solid #E5E7EB; border-radius:6px; background:#FFFFFF;'>")
+                    .append("<span style='font-weight:bold; color:#0F172A;'>")
+                    .append(escapeHtml(skill.name()))
+                    .append("</span>")
+                    .append(" <span style='display:inline-block; padding:1px 6px; border-radius:10px; margin-left:6px; background:")
+                    .append(stateBg)
+                    .append("; color:")
+                    .append(stateFg)
+                    .append("; font-weight:bold;'>")
+                    .append(stateLabel)
+                    .append("</span>")
+                    .append("<div style='color:#475569; margin-top:2px;'>")
+                    .append("CD ").append(skill.cooldownTurns())
+                    .append(" | Remaining ").append(remain)
+                    .append("</div>")
+                    .append("</div>");
+        }
+    }
+
+    private String escapeHtml(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
     private void log(String message) {
-        logArea.append(message + "\n");
+        log(classifyLogCategory(message), message);
+    }
+
+    private void log(LogCategory category, String message) {
+        int windowIndex = session == null ? -1 : session.getCurrentWindowIndex();
+        logEntries.add(new LogEntry(windowIndex, category, message));
+        if (logEntries.size() > 1500) {
+            logEntries.remove(0);
+        }
+        refreshLogArea();
+    }
+
+    private void refreshLogArea() {
+        EnumSet<LogCategory> active = activeLogCategories();
+        StringBuilder sb = new StringBuilder();
+        Integer previousWindow = null;
+        List<LogEntry> visibleEntries = new ArrayList<>();
+        for (LogEntry entry : logEntries) {
+            if (!active.contains(entry.category())) {
+                continue;
+            }
+            visibleEntries.add(entry);
+            if (previousWindow == null || previousWindow != entry.windowIndex()) {
+                previousWindow = entry.windowIndex();
+                if (sb.length() > 0) {
+                    sb.append("\n");
+                }
+                sb.append("=== ")
+                        .append(entry.windowIndex() < 0 ? "SETUP" : "WINDOW " + entry.windowIndex())
+                        .append(" ===\n");
+            }
+            sb.append("[")
+                    .append(categoryTag(entry.category()))
+                    .append("] ")
+                    .append(entry.message())
+                    .append("\n");
+        }
+        logArea.setText(sb.toString());
         logArea.setCaretPosition(logArea.getDocument().getLength());
+        refreshLogSummary(visibleEntries);
+    }
+
+    private void refreshLogSummary(List<LogEntry> visibleEntries) {
+        if (visibleEntries == null || visibleEntries.isEmpty()) {
+            logSummaryLabel.setText("Recent: no events");
+            return;
+        }
+
+        StringBuilder summary = new StringBuilder("<html><b>Recent:</b> ");
+        int start = Math.max(0, visibleEntries.size() - 3);
+        for (int i = start; i < visibleEntries.size(); i++) {
+            LogEntry entry = visibleEntries.get(i);
+            if (i > start) {
+                summary.append(" &nbsp;|&nbsp; ");
+            }
+            summary.append("[")
+                    .append(categoryTag(entry.category()))
+                    .append("] ")
+                    .append(trimForSummary(entry.message(), 34));
+        }
+        summary.append("</html>");
+        logSummaryLabel.setText(summary.toString());
+    }
+
+    private String trimForSummary(String text, int limit) {
+        if (text == null) {
+            return "";
+        }
+        String trimmed = text.trim();
+        if (trimmed.length() <= limit) {
+            return trimmed;
+        }
+        return trimmed.substring(0, Math.max(0, limit - 1)) + "...";
+    }
+
+    private EnumSet<LogCategory> activeLogCategories() {
+        EnumSet<LogCategory> active = EnumSet.noneOf(LogCategory.class);
+        if (actionLogFilter.isSelected()) {
+            active.add(LogCategory.ACTION);
+        }
+        if (combatLogFilter.isSelected()) {
+            active.add(LogCategory.COMBAT);
+        }
+        if (progressionLogFilter.isSelected()) {
+            active.add(LogCategory.PROGRESSION);
+        }
+        if (systemLogFilter.isSelected()) {
+            active.add(LogCategory.SYSTEM);
+        }
+        if (active.isEmpty()) {
+            active.add(LogCategory.SYSTEM);
+        }
+        return active;
+    }
+
+    private String categoryTag(LogCategory category) {
+        return switch (category) {
+            case ACTION -> "ACTION";
+            case COMBAT -> "COMBAT";
+            case PROGRESSION -> "PROGRESS";
+            case SYSTEM -> "SYSTEM";
+        };
+    }
+
+    private LogCategory classifyLogCategory(String message) {
+        String lower = message == null ? "" : message.toLowerCase();
+        if (lower.contains("mastery") || lower.contains("선택 가능") || lower.contains("승급")
+                || lower.contains("learned") || lower.contains("호칭")) {
+            return LogCategory.PROGRESSION;
+        }
+        if (lower.contains("attack") || lower.contains("casts") || lower.contains("dmg")
+                || lower.contains("defend") || lower.contains("피격") || lower.contains("적중")) {
+            return LogCategory.COMBAT;
+        }
+        if (lower.contains("moves") || lower.contains("ends turn") || lower.contains("action rejected")
+                || lower.contains("행동") || lower.contains("이동") || lower.contains("준비 완료")) {
+            return LogCategory.ACTION;
+        }
+        return LogCategory.SYSTEM;
+    }
+
+    private void setActionFeedback(String message, boolean isError) {
+        actionFeedbackLabel.setText(message);
+        actionFeedbackLabel.setForeground(isError ? new Color(184, 36, 36) : new Color(36, 84, 165));
+    }
+
+    private String actionName(GameAction action) {
+        if (action == null) {
+            return "Unknown";
+        }
+        if (action instanceof AttackAction) {
+            return "Attack";
+        }
+        if (action instanceof DefendAction) {
+            return "Defend";
+        }
+        if (action instanceof MoveAction) {
+            return "Move";
+        }
+        if (action instanceof UseSkillAction skill) {
+            return "Skill(" + skill.skillName() + ")";
+        }
+        if (action instanceof EndTurnAction) {
+            return "End Turn";
+        }
+        return action.getClass().getSimpleName();
     }
 
     private void showWinner() {
@@ -559,16 +1452,79 @@ public class MageFightFrame extends JFrame {
             }
             refreshArchetypeUi();
         }
+        showResultDialog(text, false);
+    }
+
+    private void showResultDialog(String text, boolean disconnectOnExit) {
         SwingUtilities.invokeLater(() -> {
-            JOptionPane.showMessageDialog(this, text, "Result", JOptionPane.INFORMATION_MESSAGE);
-            dispose();
+            if (activeResultDialog != null && activeResultDialog.isShowing()) {
+                activeResultDialog.dispose();
+            }
+
+            Object[] options = {"계속 보기", "나가기"};
+            JOptionPane pane = new JOptionPane(
+                    text,
+                    JOptionPane.INFORMATION_MESSAGE,
+                    JOptionPane.DEFAULT_OPTION,
+                    null,
+                    options,
+                    options[0]
+            );
+
+            JDialog dialog = pane.createDialog(this, "Result");
+            dialog.setModal(false);
+            dialog.setAlwaysOnTop(true);
+            pane.addPropertyChangeListener((PropertyChangeEvent evt) -> {
+                if (!JOptionPane.VALUE_PROPERTY.equals(evt.getPropertyName())) {
+                    return;
+                }
+                Object selected = pane.getValue();
+                if (selected == null || JOptionPane.UNINITIALIZED_VALUE.equals(selected)) {
+                    return;
+                }
+                pane.setValue(JOptionPane.UNINITIALIZED_VALUE);
+                dialog.dispose();
+
+                if ("나가기".equals(selected)) {
+                    if (disconnectOnExit && networkClient != null && networkClient.isConnected()) {
+                        networkClient.disconnect();
+                    }
+                    dispose();
+                }
+            });
+
+            dialog.addWindowListener(new java.awt.event.WindowAdapter() {
+                @Override
+                public void windowClosed(java.awt.event.WindowEvent e) {
+                    if (activeResultDialog == dialog) {
+                        activeResultDialog = null;
+                    }
+                }
+            });
+
+            activeResultDialog = dialog;
+            dialog.setVisible(true);
         });
     }
 
     private void startNewMatch(MageArchetype archetype) {
         this.currentArchetype = archetype;
-        this.elementalPathPromptShown = false;
+        this.onlineOpponentId = null;
+        this.pendingOnlineResultText = null;
+        this.pendingOnlineResultDisconnect = false;
+        this.pendingPromotionTarget = null;
+        this.promotionService.resetForNewMatch();
         this.battleReturnHandled = false;
+        this.resolutionPlaybackActive = false;
+        stopPhaseFrameAnimation();
+        this.resolutionPlaybackStepIndex = 0;
+        this.lastPlayedResolvedWindowIndex = -1;
+        this.currentPlaybackActions = List.of();
+        this.playbackHpBeforeByPlayer.clear();
+        this.playbackHpByPlayer.clear();
+        this.playbackPositionBeforeByPlayer.clear();
+        this.playbackPositionByPlayer.clear();
+        this.opponentDisplayName = "Bot";
         this.playerSpec = presetFactory.createPlayerSpec(archetype, progress);
 
         MageArchetype botArchetype = switch (archetype) {
@@ -642,6 +1598,9 @@ public class MageFightFrame extends JFrame {
                         if (!session.isInsideMap(nextCol, nextRow)) {
                             continue;
                         }
+                        if (!session.isPassableCell(nextCol, nextRow)) {
+                            continue;
+                        }
                         if (session.isCellOccupied(nextCol, nextRow, actorId)) {
                             continue;
                         }
@@ -659,12 +1618,6 @@ public class MageFightFrame extends JFrame {
             MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
             int nextCol = projectedPos.col() + direction.deltaCol;
             int nextRow = projectedPos.row() + direction.deltaRow;
-            if (!session.isInsideMap(nextCol, nextRow)) {
-                return false;
-            }
-            if (session.isCellOccupied(nextCol, nextRow, actorId)) {
-                return false;
-            }
             return executeAction(new MoveAction(actorId, nextCol, nextRow, System.currentTimeMillis()),
                     actorLabel + " moves " + direction.label + " to (" + nextCol + "," + nextRow + ").");
         }).orElse(false);
@@ -726,6 +1679,7 @@ public class MageFightFrame extends JFrame {
         MageSkillTree tree = presetFactory.createMageSkillTree(currentArchetype);
         skillTreePanel.setContext(progress, tree);
         skillTreePanel.setFooterMessage("현재 열려 있는 스킬을 클릭해 영감을 소모하고 습득할 수 있습니다.");
+        updatePromotionReadyButton();
     }
 
     private void onSkillTreeNodeClicked(SkillTreeNode node) {
@@ -795,42 +1749,198 @@ public class MageFightFrame extends JFrame {
     }
 
     private void maybePromptPathShift() {
-        if (elementalPathPromptShown || currentArchetype != MageArchetype.APPRENTICE) {
+        if (promotionService.isPromptShown()) {
             return;
         }
 
+        Optional<MageArchetype> targetOpt = resolvePromotionTarget();
+        if (targetOpt.isEmpty()) {
+            return;
+        }
+        MageArchetype target = targetOpt.get();
+
+        if (!isElementalPathConditionMet()) {
+            return;
+        }
+
+        if (promotionService.isDeferred()) {
+            handleDeferredElementalPath();
+            return;
+        }
+
+        int choice = promptPromotionChoice(target);
+        if (choice == 0) {
+            promoteToArchetype(target,
+                    "새로운 길을 선택했다. 호칭이 " + target.displayName() + "로 승급되었습니다.");
+        } else if (choice == 1) {
+            promotionService.setDeferred(true);
+            log(target.displayName() + " 승급을 뒤로 미뤘다.");
+            updatePromotionReadyButton();
+        }
+    }
+
+    private boolean isElementalPathConditionMet() {
         MageSkillTree tree = presetFactory.createMageSkillTree(currentArchetype);
         long baseNodes = tree.nodes().stream()
                 .filter(node -> node.inspirationCost() > 0 && node.inspirationCost() <= 2)
                 .count();
         if (baseNodes == 0) {
-            return;
+            return false;
         }
-
         long learnedBaseNodes = tree.nodes().stream()
                 .filter(node -> node.inspirationCost() > 0 && node.inspirationCost() <= 2)
                 .filter(node -> progress.hasLearnedSkill(node.skill().name()))
                 .count();
+        return learnedBaseNodes * 2 >= baseNodes;
+    }
 
-        if (learnedBaseNodes * 2 < baseNodes) {
-            return;
+    private void handleDeferredElementalPath() {
+        if (promotionService.shouldNotifyDeferredOnce()) {
+            String label = pendingPromotionTarget == null ? "승급" : pendingPromotionTarget.displayName() + " 승급";
+            log(label + "을 보류했습니다. 우측 '승급 가능' 버튼에서 나중에 선택할 수 있습니다.");
+            promotionService.markDeferredNotified();
         }
+        updatePromotionReadyButton();
+    }
 
-        int choice = JOptionPane.showOptionDialog(
+    private int promptPromotionChoice(MageArchetype target) {
+        return JOptionPane.showOptionDialog(
                 this,
-                "당신은 원소술의 길이 열리는 것을 보았다.",
+                "당신 앞에 " + target.displayName() + "의 길이 열렸다.",
                 "MageFight",
                 JOptionPane.DEFAULT_OPTION,
                 JOptionPane.INFORMATION_MESSAGE,
                 null,
                 new Object[]{"선택한다", "포기한다"},
                 "선택한다");
-        elementalPathPromptShown = true;
-        if (choice == 0) {
-            log("원소술의 길을 선택했다.");
-        } else if (choice == 1) {
-            log("원소술의 길을 뒤로 미뤘다.");
+    }
+
+    private boolean promoteToArchetype(MageArchetype target, String successLog) {
+        if (target == null) {
+            return false;
         }
+        if (!ArchetypeUnlockService.trySelect(target, progress)) {
+            String reason = ArchetypeUnlockService.lockReason(target, progress)
+                    .orElse("승급 조건을 만족하지 못했습니다.");
+            log(target.displayName() + " 승급 실패: " + reason);
+            updatePromotionReadyButton();
+            return false;
+        }
+        currentArchetype = target;
+        promotionService.markPromptShown();
+        promotionService.setDeferred(false);
+        applyArchetypeToCurrentMatch(currentArchetype);
+        startPromotionEffect(target.displayName() + " 승급");
+        log(successLog);
+        persistProgress();
+        refreshArchetypeUi();
+        return true;
+    }
+
+    private Optional<MageArchetype> resolvePromotionTarget() {
+        Optional<MageArchetype> next = promotionService.findNextPromotionTarget(progress, currentArchetype);
+        pendingPromotionTarget = next.orElse(null);
+        return next;
+    }
+
+    private boolean canOfferPromotion(MageArchetype target) {
+        if (target == null) {
+            return false;
+        }
+        return ArchetypeUnlockService.lockReason(target, progress).isEmpty();
+    }
+
+    private void updatePromotionReadyButton() {
+        resolvePromotionTarget();
+        boolean visible = pendingPromotionTarget != null && promotionService.isDeferred() && canOfferPromotion(pendingPromotionTarget);
+        promotionReadyBtn.setVisible(visible);
+        promotionReadyBtn.setText(visible && pendingPromotionTarget != null ? pendingPromotionTarget.displayName() + " 승급" : "승급 가능");
+        if (visible) {
+            startPromotionBlink();
+        } else {
+            stopPromotionBlink();
+        }
+    }
+
+    private void startPromotionBlink() {
+        if (promotionBlinkTimer != null) {
+            return;
+        }
+        String baseText = pendingPromotionTarget == null ? "승급 가능" : pendingPromotionTarget.displayName() + " 승급";
+        promotionBlinkOn = false;
+        promotionBlinkTimer = new Timer(380, e -> {
+            promotionBlinkOn = !promotionBlinkOn;
+            if (promotionBlinkOn) {
+                promotionReadyBtn.setBackground(new Color(255, 214, 102));
+                promotionReadyBtn.setText(baseText + "!");
+            } else {
+                promotionReadyBtn.setBackground(new Color(255, 241, 166));
+                promotionReadyBtn.setText(baseText);
+            }
+        });
+        promotionBlinkTimer.setRepeats(true);
+        promotionBlinkTimer.start();
+    }
+
+    private void stopPromotionBlink() {
+        if (promotionBlinkTimer != null) {
+            promotionBlinkTimer.stop();
+            promotionBlinkTimer = null;
+        }
+        promotionBlinkOn = false;
+        promotionReadyBtn.setBackground(new Color(255, 241, 166));
+        promotionReadyBtn.setText(pendingPromotionTarget == null ? "승급 가능" : pendingPromotionTarget.displayName() + " 승급");
+    }
+
+    private void applyArchetypeToCurrentMatch(MageArchetype archetype) {
+        if (archetype == null || playerSpec == null) {
+            return;
+        }
+        FighterSpec updatedSpec = presetFactory.createPlayerSpec(archetype, progress);
+        playerSpec = updatedSpec;
+        specs.put(PLAYER_ID, updatedSpec);
+
+        Map<String, Integer> previousCooldowns = cooldowns.getOrDefault(PLAYER_ID, Map.of());
+        Map<String, Integer> mergedCooldowns = new HashMap<>();
+        for (SkillTemplate skill : updatedSpec.skills()) {
+            mergedCooldowns.put(skill.name(), Math.max(0, previousCooldowns.getOrDefault(skill.name(), 0)));
+        }
+        cooldowns.put(PLAYER_ID, mergedCooldowns);
+
+        String selectedSkill = String.valueOf(skillCombo.getSelectedItem());
+        skillCombo.removeAllItems();
+        for (SkillTemplate skill : updatedSpec.skills()) {
+            skillCombo.addItem(skill.name());
+        }
+        if (selectedSkill != null && mergedCooldowns.containsKey(selectedSkill)) {
+            skillCombo.setSelectedItem(selectedSkill);
+        }
+
+        if (session != null) {
+            PlayerState state = session.getPlayerState(PLAYER_ID);
+            applyTierEnergyRule(state, archetype);
+            configureMovementRules(state, updatedSpec);
+            for (SkillTemplate skill : updatedSpec.skills()) {
+                session.registerSkill(skill);
+                state.registerSkill(skill.name());
+            }
+        }
+
+        refreshUi();
+    }
+
+    private void startPromotionEffect(String text) {
+        promotionEffectActive = true;
+        promotionEffectStartedAtMs = System.currentTimeMillis();
+        promotionEffectText = text == null ? "승급" : text;
+        firstPersonView.repaint();
+        Timer timer = new Timer(1400, e -> {
+            promotionEffectActive = false;
+            promotionEffectText = "";
+            firstPersonView.repaint();
+        });
+        timer.setRepeats(false);
+        timer.start();
     }
 
     private void applyFontRecursively(Container container, Font font) {
@@ -846,10 +1956,53 @@ public class MageFightFrame extends JFrame {
         if (networkClient == null) {
             return;
         }
+        this.onlineOpponentId = null;
+        this.battleReturnHandled = false;
+        this.lastPlayedResolvedWindowIndex = -1;
+        this.pendingOnlineResultText = null;
+        this.pendingOnlineResultDisconnect = false;
+
+        // 매칭 상태 변경 핸들링
+        networkClient.setOnMatchStateChanged(state -> {
+            switch (state) {
+                case SEARCHING:
+                    matchingStatusLabel.setText("Searching for opponent...");
+                    matchingStatusLabel.setForeground(new Color(255, 128, 0));
+                    findGameBtn.setEnabled(false);
+                    cancelMatchmakingBtn.setEnabled(true);
+                    startMatchingTimeoutTimer();
+                    log(LogCategory.SYSTEM, "매칭 검색 시작");
+                    break;
+                case MATCHED:
+                    stopMatchingTimeoutTimer();
+                    matchingStatusLabel.setText("Opponent found!");
+                    matchingStatusLabel.setForeground(new Color(0, 128, 0));
+                    log(LogCategory.SYSTEM, "상대방을 찾았습니다!");
+                    break;
+                case IDLE:
+                    stopMatchingTimeoutTimer();
+                    stopOnlineTurnTimer();
+                    matchingStatusLabel.setText("Offline Mode");
+                    matchingStatusLabel.setForeground(new Color(100, 100, 100));
+                    findGameBtn.setEnabled(true);
+                    cancelMatchmakingBtn.setEnabled(false);
+                    break;
+                case DISCONNECTED:
+                    stopMatchingTimeoutTimer();
+                    stopOnlineTurnTimer();
+                    matchingStatusLabel.setText("Disconnected");
+                    matchingStatusLabel.setForeground(new Color(200, 0, 0));
+                    findGameBtn.setEnabled(false);
+                    cancelMatchmakingBtn.setEnabled(false);
+                    break;
+            }
+        });
 
         // 서버 메시지 핸들링
         networkClient.setOnMessageReceived(msg -> {
-            if ("MATCH_STARTED".equalsIgnoreCase(msg.type())) {
+            if ("MATCHED".equalsIgnoreCase(msg.type())) {
+                handleMatchFound();
+            } else if ("MATCH_STARTED".equalsIgnoreCase(msg.type())) {
                 handleMatchStarted(msg);
             } else if ("STATE_UPDATED".equalsIgnoreCase(msg.type())) {
                 handleStateUpdated(msg);
@@ -858,8 +2011,25 @@ public class MageFightFrame extends JFrame {
             }
         });
 
-        log("온라인 매칭 대기 중...");
-        turnLabel.setText("Waiting for match...");
+        // 에러 핸들링
+        networkClient.setOnErrorReceived(errorMsg -> {
+            log(LogCategory.SYSTEM, "온라인 오류: " + errorMsg);
+            setActionFeedback("Connection error: " + errorMsg, true);
+            if (networkClient.getMatchState() == GameNetworkClient.MatchState.SEARCHING) {
+                networkClient.cancelMatchmaking();
+            }
+        });
+
+        networkClient.requestImmediateEventSync();
+
+        log(LogCategory.SYSTEM, "온라인 모드 대기 중...");
+        turnLabel.setText("Ready for online match");
+    }
+
+    private void handleMatchFound() {
+        log(LogCategory.SYSTEM, "매칭 완료! 게임 시작 준비 중...");
+        turnLabel.setText("Match found! Starting game...");
+        SwingUtilities.invokeLater(this::refreshUi);
     }
 
     @SuppressWarnings("unchecked")
@@ -870,17 +2040,8 @@ public class MageFightFrame extends JFrame {
         networkClient.setMatchId(matchId);
 
         log("게임 시작! (ID: " + playerId + ")");
-        turnLabel.setText("Game started!");
-
-        // 맵 정보 로드
-        try {
-            Object mapObj = msg.payload().get("map");
-            if (mapObj instanceof String mapName) {
-                combatMap = presetFactory.createMap(mapName);
-            }
-        } catch (Exception e) {
-            log("맵 로드 실패: " + e.getMessage());
-        }
+        turnLabel.setText("Game started! Syncing battle state...");
+        networkClient.requestImmediateEventSync();
 
         refreshUi();
     }
@@ -888,43 +2049,155 @@ public class MageFightFrame extends JFrame {
     @SuppressWarnings("unchecked")
     private void handleStateUpdated(com.turngame.server.protocol.ResponseMessage msg) {
         Map<String, Object> payload = msg.payload();
-        String turnPlayerId = String.valueOf(payload.get("turnPlayerId"));
-        String currentPlayerId = networkClient.getMyPlayerId();
-        String opponent = null;
-
-        // 플레이어 상태 동기화
-        Object playersObj = payload.get("players");
-        if (playersObj instanceof List<?> players) {
-            for (Object p : players) {
-                if (p instanceof Map<?, ?> rawMap) {
-                    Map<String, Object> playerData = (Map<String, Object>) rawMap;
-                    String playerId = String.valueOf(playerData.get("playerId"));
-                    int hp = asInt(playerData.get("hp"));
-                    int maxHp = asInt(playerData.get("maxHp"));
-
-                    if (playerId.equals(currentPlayerId)) {
-                        playerLabel.setText("HP: " + hp + "/" + maxHp);
-                    } else {
-                        botLabel.setText("HP: " + hp + "/" + maxHp);
-                        opponent = playerId;
-                    }
+        if (networkClient != null) {
+            Object matchIdObj = payload.get("matchId");
+            if (matchIdObj != null) {
+                String payloadMatchId = String.valueOf(matchIdObj);
+                if (!payloadMatchId.isBlank() && !"null".equalsIgnoreCase(payloadMatchId)) {
+                    networkClient.setMatchId(payloadMatchId);
                 }
             }
         }
+        OnlineStateSyncService.SyncSnapshot snapshot = applyOnlineSyncSnapshot(payload);
+        updateOnlineTurnState(payload);
+        startOnlineTurnTimer();
+        String turnPlayerId = snapshot == null ? String.valueOf(payload.get("turnPlayerId")) : snapshot.turnPlayerId();
+        String currentPlayerId = networkClient.getMyPlayerId();
 
         String turnInfo = "Turn: " + (turnPlayerId.equals(currentPlayerId) ? "YOUR TURN" : "Opponent's Turn");
         turnLabel.setText(turnInfo);
 
+        int resolvedWindowIndex = snapshot == null ? -1 : snapshot.resolvedWindowIndex();
+        List<GameSession.ResolutionStep> steps = snapshot == null ? List.of() : snapshot.resolutionSteps();
+        boolean hasNewResolution = resolvedWindowIndex > lastPlayedResolvedWindowIndex;
+        if (hasNewResolution && !steps.isEmpty()) {
+            lastPlayedResolvedWindowIndex = resolvedWindowIndex;
+            playResolutionSteps(steps);
+            return;
+        }
+
         refreshUi();
     }
 
-    private int asInt(Object obj) {
-        if (obj == null) return 0;
-        if (obj instanceof Number num) return num.intValue();
+    private OnlineStateSyncService.SyncSnapshot applyOnlineSyncSnapshot(Map<String, Object> payload) {
+        if (networkClient == null || !networkClient.isConnected()) {
+            return null;
+        }
+        OnlineStateSyncService.SyncSnapshot snapshot = onlineStateSyncService.synchronize(
+                payload,
+                networkClient.getMyPlayerId(),
+                onlineOpponentId,
+                combatMap
+        );
+        if (snapshot == null) {
+            return null;
+        }
+
+        combatMap = snapshot.map();
+        session = snapshot.session();
+        onlineOpponentId = snapshot.opponentId();
+        playerDisplayName = snapshot.myCharacterDisplayName();
+        opponentDisplayName = snapshot.opponentCharacterDisplayName();
+        syncOnlineSkillCombo(snapshot.mySkillNames());
+        return snapshot;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void updateOnlineTurnState(Map<String, Object> payload) {
+        if (payload == null) {
+            return;
+        }
+        onlineTurnPlayerId = String.valueOf(payload.getOrDefault("turnPlayerId", ""));
+        onlineWindowDurationSeconds = asInt(payload.get("windowDurationSeconds"), 60);
+        int windowIndex = asInt(payload.get("windowIndex"), -1);
+        if (windowIndex != onlineWindowIndex) {
+            onlineWindowIndex = windowIndex;
+            onlineWindowDeadlineMs = System.currentTimeMillis() + onlineWindowDurationSeconds * 1000L;
+        }
+
+        onlineOpponentReady = false;
+        Object readyObj = payload.get("readyPlayers");
+        if (readyObj instanceof List<?> readyPlayers) {
+            for (Object value : readyPlayers) {
+                String readyId = String.valueOf(value);
+                if (onlineOpponentId != null && onlineOpponentId.equals(readyId)) {
+                    onlineOpponentReady = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    private void startOnlineTurnTimer() {
+        if (onlineTurnTimer != null) {
+            return;
+        }
+        onlineTurnTimer = new Timer(1000, e -> {
+            if (networkClient == null || !networkClient.isConnected()) {
+                stopOnlineTurnTimer();
+                return;
+            }
+            refreshUi();
+        });
+        onlineTurnTimer.setRepeats(true);
+        onlineTurnTimer.start();
+    }
+
+    private void stopOnlineTurnTimer() {
+        if (onlineTurnTimer == null) {
+            return;
+        }
+        onlineTurnTimer.stop();
+        onlineTurnTimer = null;
+    }
+
+    private String onlineTurnText() {
+        String myId = networkClient == null ? null : networkClient.getMyPlayerId();
+        boolean myTurn = myId != null && myId.equals(onlineTurnPlayerId);
+        long remainingMs = Math.max(0L, onlineWindowDeadlineMs - System.currentTimeMillis());
+        long remainingSec = remainingMs / 1000L;
+        String who = myTurn ? "YOUR TURN" : "OPPONENT TURN";
+        String readyText = onlineOpponentReady ? " | Opponent ended turn" : " | Opponent deciding";
+        return "Turn: " + who + " | " + remainingSec + "s" + readyText;
+    }
+
+    private int asInt(Object value, int defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
         try {
-            return Integer.parseInt(String.valueOf(obj));
-        } catch (Exception e) {
-            return 0;
+            return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
+    }
+
+    private String currentPlayerDisplayName() {
+        if (playerDisplayName != null && !playerDisplayName.isBlank()) {
+            return playerDisplayName;
+        }
+        return "Player";
+    }
+
+    private String currentOpponentDisplayName() {
+        if (opponentDisplayName != null && !opponentDisplayName.isBlank()) {
+            return opponentDisplayName;
+        }
+        return networkClient != null && networkClient.isConnected() ? "Opponent" : "Bot";
+    }
+
+    private void syncOnlineSkillCombo(List<String> skillNames) {
+        skillCombo.removeAllItems();
+        if (skillNames == null) {
+            return;
+        }
+        for (String skillName : skillNames) {
+            if (skillName != null && !skillName.isBlank()) {
+                skillCombo.addItem(skillName);
+            }
         }
     }
 
@@ -932,17 +2205,393 @@ public class MageFightFrame extends JFrame {
     private void handleGameEnded(com.turngame.server.protocol.ResponseMessage msg) {
         String winnerId = String.valueOf(msg.payload().get("winnerId"));
         String currentPlayerId = networkClient.getMyPlayerId();
+        Map<String, Object> payload = msg.payload();
+
+        OnlineStateSyncService.SyncSnapshot snapshot = applyOnlineSyncSnapshot(payload);
+        int resolvedWindowIndex = snapshot == null ? -1 : snapshot.resolvedWindowIndex();
+        List<GameSession.ResolutionStep> steps = snapshot == null ? List.of() : snapshot.resolutionSteps();
+        boolean hasNewResolution = resolvedWindowIndex > lastPlayedResolvedWindowIndex;
+        if (hasNewResolution && !steps.isEmpty()) {
+            lastPlayedResolvedWindowIndex = resolvedWindowIndex;
+            playResolutionSteps(steps);
+        } else {
+            refreshUi();
+        }
+
+        if (battleReturnHandled) {
+            return;
+        }
+        battleReturnHandled = true;
 
         if (winnerId.equals(currentPlayerId)) {
             log("승리!");
-            JOptionPane.showMessageDialog(this, "You win!", "MageFight", JOptionPane.INFORMATION_MESSAGE);
+            pendingOnlineResultText = "You win!";
+            pendingOnlineResultDisconnect = true;
         } else {
             log("패배!");
-            JOptionPane.showMessageDialog(this, "You lose!", "MageFight", JOptionPane.INFORMATION_MESSAGE);
+            pendingOnlineResultText = "You lose!";
+            pendingOnlineResultDisconnect = true;
         }
 
-        networkClient.disconnect();
-        dispose();
+        if (!resolutionPlaybackActive && pendingOnlineResultText != null) {
+            showResultDialog(pendingOnlineResultText, pendingOnlineResultDisconnect);
+            pendingOnlineResultText = null;
+            pendingOnlineResultDisconnect = false;
+        }
+    }
+
+    private void playResolutionSteps(List<GameSession.ResolutionStep> steps) {
+        if (steps == null || steps.isEmpty()) {
+            refreshUi();
+            if (pendingOnlineResultText != null) {
+                showResultDialog(pendingOnlineResultText, pendingOnlineResultDisconnect);
+                pendingOnlineResultText = null;
+                pendingOnlineResultDisconnect = false;
+            }
+            if (session.isFinished()) {
+                showWinner();
+            }
+            return;
+        }
+
+        resolutionPlaybackActive = true;
+        resolutionPlaybackStepIndex = 0;
+        playbackHpBeforeByPlayer.clear();
+        playbackHpByPlayer.clear();
+        playbackPositionBeforeByPlayer.clear();
+        playbackPositionByPlayer.clear();
+        startPhaseFrameAnimation();
+
+        List<PlaybackPhase> phases = buildPlaybackPhases(steps);
+        applyResolutionPhase(phases, 0);
+    }
+
+    private void applyResolutionPhase(List<PlaybackPhase> phases, int index) {
+        if (index >= phases.size()) {
+            resolutionPlaybackActive = false;
+            currentPhaseType = PhaseType.IMPACT;
+            stopPhaseFrameAnimation();
+            currentPlaybackActions = List.of();
+            playbackHpBeforeByPlayer.clear();
+            playbackHpByPlayer.clear();
+            playbackPositionBeforeByPlayer.clear();
+            playbackPositionByPlayer.clear();
+            refreshUi();
+            if (pendingOnlineResultText != null) {
+                showResultDialog(pendingOnlineResultText, pendingOnlineResultDisconnect);
+                pendingOnlineResultText = null;
+                pendingOnlineResultDisconnect = false;
+            }
+            if (session.isFinished()) {
+                showWinner();
+            }
+            return;
+        }
+
+        PlaybackPhase phase = phases.get(index);
+        GameSession.ResolutionStep step = phase.step();
+        resolutionPlaybackStepIndex = step.stepIndex();
+        currentPhaseType = phase.phaseType();
+        currentPhaseStartedAtMs = System.currentTimeMillis();
+        currentPhaseDurationMs = Math.max(1, phase.durationMs());
+        currentPlaybackActions = step.actions();
+        playbackHpBeforeByPlayer.clear();
+        playbackHpBeforeByPlayer.putAll(step.hpBeforeByPlayer());
+        playbackPositionBeforeByPlayer.clear();
+        playbackPositionBeforeByPlayer.putAll(step.positionBeforeByPlayer());
+
+        playbackHpByPlayer.clear();
+        playbackPositionByPlayer.clear();
+        if (phase.phaseType() == PhaseType.CAST) {
+            playbackHpByPlayer.putAll(step.hpBeforeByPlayer());
+            playbackPositionByPlayer.putAll(step.positionBeforeByPlayer());
+        } else {
+            playbackHpByPlayer.putAll(step.hpAfterByPlayer());
+            playbackPositionByPlayer.putAll(step.positionAfterByPlayer());
+        }
+
+        log(stepSummary(step, phase.phaseType()));
+        refreshUi();
+
+        Timer timer = new Timer(phase.durationMs(), e -> applyResolutionPhase(phases, index + 1));
+        timer.setRepeats(false);
+        timer.start();
+    }
+
+    private void startPhaseFrameAnimation() {
+        stopPhaseFrameAnimation();
+        phaseFrameTimer = new Timer(16, e -> firstPersonView.repaint());
+        phaseFrameTimer.setRepeats(true);
+        phaseFrameTimer.start();
+    }
+
+    private void stopPhaseFrameAnimation() {
+        if (phaseFrameTimer == null) {
+            return;
+        }
+        phaseFrameTimer.stop();
+        phaseFrameTimer = null;
+    }
+
+    @Override
+    public double currentPhaseProgress() {
+        long elapsedMs = Math.max(0L, System.currentTimeMillis() - currentPhaseStartedAtMs);
+        return Math.max(0.0, Math.min(1.0, elapsedMs / (double) Math.max(1, currentPhaseDurationMs)));
+    }
+
+    private List<PlaybackPhase> buildPlaybackPhases(List<GameSession.ResolutionStep> steps) {
+        List<PlaybackPhase> phases = new ArrayList<>();
+        for (GameSession.ResolutionStep step : steps) {
+            int maxPrepareMs = maxPrepareCastMs(step.actions());
+            boolean hasSkill = maxPrepareMs > 0;
+            if (hasSkill) {
+                int castDurationMs = Math.max(300, Math.min(1200, maxPrepareMs));
+                phases.add(new PlaybackPhase(step, PhaseType.CAST, castDurationMs));
+            }
+            phases.add(new PlaybackPhase(step, PhaseType.IMPACT, 700));
+        }
+        return phases;
+    }
+
+    private int maxPrepareCastMs(List<GameSession.ResolvedActionView> actions) {
+        int max = 0;
+        for (GameSession.ResolvedActionView action : actions) {
+            if (action.actionType() != ActionType.USE_SKILL || action.skillName() == null) {
+                continue;
+            }
+            int prepareMs = session.getSkillTemplate(action.skillName())
+                    .map(SkillTemplate::prepareCastMs)
+                    .orElse(0);
+            max = Math.max(max, prepareMs);
+        }
+        return max;
+    }
+
+    private String stepSummary(GameSession.ResolutionStep step, PhaseType phaseType) {
+        GameSession.ResolvedActionView myAction = findStepAction(step, PLAYER_ID);
+        GameSession.ResolvedActionView enemyAction = findStepAction(step, BOT_ID);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("===\n");
+        sb.append("나 - ").append(actionText(myAction, step, phaseType)).append("\n");
+        sb.append("상대 - ").append(actionText(enemyAction, step, phaseType)).append("\n");
+
+        if (phaseType == PhaseType.CAST) {
+            sb.append("시전 준비 중...\n");
+            sb.append("===");
+            return sb.toString();
+        }
+
+        int myDamageTaken = hpDelta(step, PLAYER_ID);
+        int enemyDamageTaken = hpDelta(step, BOT_ID);
+        boolean myAimedMiss = isAimedSkillMiss(myAction, step);
+        boolean enemyAimedMiss = isAimedSkillMiss(enemyAction, step);
+        if (myDamageTaken > 0) {
+            sb.append("피격당했습니다!\n");
+        }
+        if (myAimedMiss) {
+            sb.append("내 스킬이 빗나갔습니다!\n");
+        }
+        int enemyIncomingDamage = incomingDamage(step, BOT_ID);
+
+        if (myAction != null && myAction.actionType() == ActionType.DEFEND) {
+            if (myDamageTaken == 0 && isTargetedByAttack(step, PLAYER_ID)) {
+                sb.append("전부 방어했습니다!\n");
+            } else if (myDamageTaken > 0 && isTargetedByAttack(step, PLAYER_ID)) {
+                sb.append("일부 방어했습니다!\n");
+            }
+        }
+        if (enemyAction != null && enemyAction.actionType() == ActionType.DEFEND && isTargetedByAttack(step, BOT_ID)) {
+            if (enemyDamageTaken == 0) {
+                sb.append("상대가 흘려보냈습니다!\n");
+            } else if (enemyIncomingDamage > 0 && enemyDamageTaken < enemyIncomingDamage) {
+                sb.append("상대가 일부 방어했습니다!\n");
+            } else if (enemyDamageTaken > 0) {
+                sb.append("상대를 적중시켰습니다!\n");
+            }
+        } else if (enemyDamageTaken > 0) {
+            sb.append("상대를 적중시켰습니다!\n");
+        }
+        if (enemyAimedMiss) {
+            sb.append("상대 스킬이 빗나갔습니다!\n");
+        }
+        sb.append("===");
+        return sb.toString();
+    }
+
+    private boolean isAimedSkillMiss(GameSession.ResolvedActionView action, GameSession.ResolutionStep step) {
+        if (action == null || action.actionType() != ActionType.USE_SKILL) {
+            return false;
+        }
+        if (action.targetCol() == null || action.targetRow() == null || action.targetId() == null) {
+            return false;
+        }
+        MapCellPosition targetBefore = step.positionBeforeByPlayer().get(action.targetId());
+        if (targetBefore == null) {
+            return false;
+        }
+        return targetBefore.col() != action.targetCol() || targetBefore.row() != action.targetRow();
+    }
+
+    private int incomingDamage(GameSession.ResolutionStep step, String targetId) {
+        int total = 0;
+        for (GameSession.ResolvedActionView action : step.actions()) {
+            if ((action.actionType() != ActionType.ATTACK && action.actionType() != ActionType.USE_SKILL)
+                    || !targetId.equals(action.targetId())) {
+                continue;
+            }
+            Integer damageValue = action.damage();
+            if (damageValue != null) {
+                total += Math.max(0, damageValue);
+            }
+        }
+        return total;
+    }
+
+    private int hpDelta(GameSession.ResolutionStep step, String playerId) {
+        int before = step.hpBeforeByPlayer().getOrDefault(playerId, step.hpAfterByPlayer().getOrDefault(playerId, 0));
+        int after = step.hpAfterByPlayer().getOrDefault(playerId, before);
+        return Math.max(0, before - after);
+    }
+
+    private GameSession.ResolvedActionView findStepAction(GameSession.ResolutionStep step, String actorId) {
+        for (GameSession.ResolvedActionView action : step.actions()) {
+            if (actorId.equals(action.actorId())) {
+                return action;
+            }
+        }
+        return null;
+    }
+
+    private boolean isTargetedByAttack(GameSession.ResolutionStep step, String targetId) {
+        for (GameSession.ResolvedActionView action : step.actions()) {
+            if ((action.actionType() == ActionType.ATTACK || action.actionType() == ActionType.USE_SKILL)
+                    && targetId.equals(action.targetId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String actionText(GameSession.ResolvedActionView action, GameSession.ResolutionStep step, PhaseType phaseType) {
+        if (action == null) {
+            return "";
+        }
+        if (action.actionType() == ActionType.USE_SKILL) {
+            if (phaseType == PhaseType.CAST) {
+                return (action.skillName() == null ? "스킬" : action.skillName()) + " (시전)";
+            }
+            return action.skillName() == null ? "스킬" : action.skillName();
+        }
+        if (action.actionType() == ActionType.ATTACK) {
+            return "공격";
+        }
+        if (action.actionType() == ActionType.DEFEND) {
+            return "방어";
+        }
+        if (action.actionType() == ActionType.MOVE) {
+            if (isBouncedMove(action, step)) {
+                return "이동(충돌로 튕김)";
+            }
+            return "이동";
+        }
+        return action.actionType().name();
+    }
+
+    @Override
+    public Optional<MapCellPosition> displayedPositionOf(String playerId) {
+        if (resolutionPlaybackActive && playbackPositionByPlayer.containsKey(playerId)) {
+            return Optional.ofNullable(playbackPositionByPlayer.get(playerId));
+        }
+        return session.getPlayerPosition(playerId);
+    }
+
+    private int displayedHpOf(String playerId, int fallback) {
+        if (resolutionPlaybackActive && playbackHpByPlayer.containsKey(playerId)) {
+            return playbackHpByPlayer.get(playerId);
+        }
+        return fallback;
+    }
+
+    @Override
+    public boolean isActorCastingInCurrentStep(String actorId) {
+        if (currentPhaseType != PhaseType.CAST) {
+            return false;
+        }
+        for (GameSession.ResolvedActionView action : currentPlaybackActions) {
+            if (actorId.equals(action.actorId())
+                    && (action.actionType() == ActionType.ATTACK || action.actionType() == ActionType.USE_SKILL)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isDefendingInCurrentStep(String actorId) {
+        if (currentPhaseType == PhaseType.CAST) {
+            return false;
+        }
+        for (GameSession.ResolvedActionView action : currentPlaybackActions) {
+            if (actorId.equals(action.actorId()) && action.actionType() == ActionType.DEFEND) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isPlayerHitInCurrentStep(String playerId) {
+        if (currentPhaseType == PhaseType.CAST) {
+            return false;
+        }
+        if (!isActuallyDamagedInCurrentStep(playerId)) {
+            return false;
+        }
+        for (GameSession.ResolvedActionView action : currentPlaybackActions) {
+            if ((action.actionType() == ActionType.ATTACK || action.actionType() == ActionType.USE_SKILL)
+                    && playerId.equals(action.targetId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isActuallyDamagedInCurrentStep(String playerId) {
+        int beforeHp = playbackHpBeforeByPlayer.getOrDefault(playerId, playbackHpByPlayer.getOrDefault(playerId, 0));
+        int afterHp = playbackHpByPlayer.getOrDefault(playerId, beforeHp);
+        return afterHp < beforeHp;
+    }
+
+    @Override
+    public boolean isBouncedInCurrentStep(String actorId) {
+        if (currentPhaseType == PhaseType.CAST) {
+            return false;
+        }
+        for (GameSession.ResolvedActionView action : currentPlaybackActions) {
+            if (actorId.equals(action.actorId()) && action.actionType() == ActionType.MOVE) {
+                if (isBouncedMove(action)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isBouncedMove(GameSession.ResolvedActionView action) {
+        MapCellPosition after = playbackPositionByPlayer.get(action.actorId());
+        if (after == null || action.targetCol() == null || action.targetRow() == null) {
+            return false;
+        }
+        return after.col() != action.targetCol() || after.row() != action.targetRow();
+    }
+
+    private boolean isBouncedMove(GameSession.ResolvedActionView action, GameSession.ResolutionStep step) {
+        MapCellPosition after = step.positionAfterByPlayer().get(action.actorId());
+        if (after == null || action.targetCol() == null || action.targetRow() == null) {
+            return false;
+        }
+        return after.col() != action.targetCol() || after.row() != action.targetRow();
     }
 
     private void persistProgress() {
@@ -971,229 +2620,120 @@ public class MageFightFrame extends JFrame {
         }
     }
 
-    private final class FirstPersonBattlePanel extends JPanel {
-        private static final int VIEW_MARGIN = 24;
-        private static final int VIEWPORT_RADIUS = 2;
-        private static final int CELL_SIZE = 72;
+    @Override
+    public GameSession session() {
+        return session;
+    }
 
-        @Override
-        protected void paintComponent(Graphics g) {
-            super.paintComponent(g);
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+    @Override
+    public String playerId() {
+        return PLAYER_ID;
+    }
 
-            int w = getWidth();
-            int h = getHeight();
-            paintBackground(g2, w, h);
+    @Override
+    public String botId() {
+        return BOT_ID;
+    }
 
-            if (session == null) {
-                drawInfo(g2, "Preparing battle view...", w, h);
-                g2.dispose();
-                return;
-            }
+    @Override
+    public boolean resolutionPlaybackActive() {
+        return resolutionPlaybackActive;
+    }
 
-            MapCellPosition playerPos = session.getPlayerPosition(PLAYER_ID).orElse(null);
-            MapCellPosition enemyPos = session.getPlayerPosition(BOT_ID).orElse(null);
-            if (playerPos == null || enemyPos == null) {
-                drawInfo(g2, "No target in sight", w, h);
-                g2.dispose();
-                return;
-            }
+    @Override
+    public boolean isCastPhase() {
+        return currentPhaseType == PhaseType.CAST;
+    }
 
-            drawBattleGrid(g2, w, h, playerPos, enemyPos);
-            drawInfo(g2, "Player at " + positionText(playerPos) + " | Enemy at " + positionText(enemyPos), w, h);
-            g2.dispose();
+    @Override
+    public List<GameSession.ResolvedActionView> currentPlaybackActions() {
+        return currentPlaybackActions;
+    }
+
+    @Override
+    public MapCellPosition playbackPositionBeforeOf(String actorId) {
+        return playbackPositionBeforeByPlayer.get(actorId);
+    }
+
+    @Override
+    public MapCellPosition playbackPositionAfterOf(String actorId) {
+        return playbackPositionByPlayer.get(actorId);
+    }
+
+    @Override
+    public FighterSpec playerSpec() {
+        return playerSpec;
+    }
+
+    @Override
+    public FighterSpec botSpec() {
+        return botSpec;
+    }
+
+    @Override
+    public MageArchetype currentArchetype() {
+        return currentArchetype;
+    }
+
+    @Override
+    public String selectedSkillName() {
+        return String.valueOf(skillCombo.getSelectedItem());
+    }
+
+    @Override
+    public Font defaultFont() {
+        return DEFAULT_FONT;
+    }
+
+    @Override
+    public boolean promotionEffectActive() {
+        return promotionEffectActive;
+    }
+
+    @Override
+    public long promotionEffectStartedAtMs() {
+        return promotionEffectStartedAtMs;
+    }
+
+    @Override
+    public void clearPromotionEffect() {
+        promotionEffectActive = false;
+    }
+
+    @Override
+    public String promotionEffectText() {
+        return promotionEffectText;
+    }
+
+    @Override
+    public Color playerSkinColor() {
+        return playerSkinColor;
+    }
+
+    @Override
+    public Color playerOutfitColor() {
+        return playerOutfitColor;
+    }
+
+    @Override
+    public boolean onlineMode() {
+        return networkClient != null && networkClient.isConnected();
+    }
+
+    @Override
+    public String selfHudTag() {
+        return currentPlayerDisplayName();
+    }
+
+    @Override
+    public String opponentHudTag() {
+        return currentOpponentDisplayName();
+    }
+
+    private static Color parseHexColor(String hex, Color fallback) {
+        if (hex == null || !hex.matches("^#[0-9a-fA-F]{6}$")) {
+            return fallback;
         }
-
-        private void paintBackground(Graphics2D g2, int w, int h) {
-            g2.setPaint(new GradientPaint(0, 0, new Color(220, 240, 255), 0, h, new Color(58, 67, 56)));
-            g2.fillRect(0, 0, w, h);
-        }
-
-        private void drawBattleGrid(Graphics2D g2, int w, int h, MapCellPosition playerPos, MapCellPosition enemyPos) {
-            BattleMap map = session.getBattleMap();
-            int rows = Math.max(1, map.rows());
-            int cols = Math.max(1, map.cols());
-
-            int viewportCols = Math.min(cols, VIEWPORT_RADIUS * 2 + 1);
-            int viewportRows = Math.min(rows, VIEWPORT_RADIUS * 2 + 1);
-
-            int startCol = clamp(playerPos.col() - viewportCols / 2, 0, Math.max(0, cols - viewportCols));
-            int startRow = clamp(playerPos.row() - viewportRows / 2, 0, Math.max(0, rows - viewportRows));
-
-            int availableWidth = w - VIEW_MARGIN * 2;
-            int availableHeight = h - 110;
-            int cellW = Math.max(CELL_SIZE, availableWidth / viewportCols);
-            int cellH = Math.max(CELL_SIZE, availableHeight / viewportRows);
-            int gridW = cellW * viewportCols;
-            int gridH = cellH * viewportRows;
-            int originX = (w - gridW) / 2;
-            int originY = 70;
-
-            String[] layoutRows = map.layoutRows().toArray(String[]::new);
-            for (int viewRow = 0; viewRow < viewportRows; viewRow++) {
-                for (int viewCol = 0; viewCol < viewportCols; viewCol++) {
-                    int worldCol = startCol + viewCol;
-                    int worldRow = startRow + viewRow;
-                    int x = originX + viewCol * cellW;
-                    int y = originY + viewRow * cellH;
-
-                    boolean playerCell = worldCol == playerPos.col() && worldRow == playerPos.row();
-                    boolean enemyCell = worldCol == enemyPos.col() && worldRow == enemyPos.row();
-                    boolean sameCell = playerCell && enemyCell;
-
-                    paintCell(g2, x, y, cellW, cellH, worldCol, worldRow, startRow, playerCell, enemyCell, sameCell, layoutRows);
-                    paintSkillRangeOverlay(g2, x, y, cellW, cellH, worldCol, worldRow, playerPos);
-
-                    if (playerCell) {
-                        drawUnit(g2, x, y, cellW, cellH, playerSpec == null ? MageArchetype.APPRENTICE : currentArchetype, true, "YOU");
-                    }
-                    if (enemyCell) {
-                        drawUnit(g2, x, y, cellW, cellH, currentOrBotArchetype(), false, "BOT");
-                    }
-                }
-            }
-
-            g2.setColor(new Color(255, 255, 255, 100));
-            g2.setStroke(new BasicStroke(1.5f));
-            g2.drawRoundRect(originX - 6, originY - 6, gridW + 12, gridH + 12, 18, 18);
-        }
-
-        private void paintCell(Graphics2D g2, int x, int y, int cellW, int cellH, int worldCol, int worldRow, int startRow,
-                               boolean playerCell, boolean enemyCell, boolean sameCell, String[] layoutRows) {
-            double depth = 1.0 - ((worldRow - startRow) / (double) Math.max(1, layoutRows.length));
-            depth = Math.max(0.15, Math.min(1.0, depth));
-
-            Color base = new Color(46, 61, 47);
-            Color highlight = new Color(76, 106, 86);
-            Color fog = new Color(8, 10, 14, 40);
-            Color cellColor = blend(base, highlight, 1.0 - depth * 0.65);
-            g2.setColor(cellColor);
-            g2.fillRoundRect(x + 3, y + 3, cellW - 6, cellH - 6, 18, 18);
-
-            if (worldRow >= 0 && worldRow < layoutRows.length) {
-                String rowText = layoutRows[worldRow];
-                if (worldCol >= 0 && worldCol < rowText.length()) {
-                    char tile = rowText.charAt(worldCol);
-                    g2.setColor(new Color(255, 255, 255, 90));
-                    g2.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
-                    g2.drawString(String.valueOf(tile), x + 11, y + 20);
-                }
-            }
-
-            g2.setColor(new Color(255, 255, 255, 30));
-            g2.drawRoundRect(x + 3, y + 3, cellW - 6, cellH - 6, 18, 18);
-
-            if (!playerCell && !enemyCell) {
-                g2.setColor(fog);
-                g2.fillRoundRect(x + 3, y + 3, cellW - 6, cellH - 6, 18, 18);
-            }
-
-            if (sameCell) {
-                g2.setColor(new Color(255, 224, 130, 80));
-                g2.fillRoundRect(x + 3, y + 3, cellW - 6, cellH - 6, 18, 18);
-            }
-        }
-
-        private void paintSkillRangeOverlay(Graphics2D g2, int x, int y, int cellW, int cellH, int worldCol, int worldRow, MapCellPosition playerPos) {
-            if (playerSpec == null) {
-                return;
-            }
-
-            String skillName = String.valueOf(skillCombo.getSelectedItem());
-            SkillTemplate skill = findSkill(playerSpec, skillName);
-            if (skill == null || skill.effect() == null || playerPos == null) {
-                return;
-            }
-
-            int dx = Math.abs(worldCol - playerPos.col());
-            int dy = Math.abs(worldRow - playerPos.row());
-            boolean inRange = switch (skill.effect().areaType()) {
-                case STATIC -> dx + dy <= skill.effect().areaRadius();
-                case DYNAMIC -> Math.max(dx, dy) <= skill.effect().areaRadius();
-            };
-            if (!inRange) {
-                return;
-            }
-
-                Color overlay = skill.effect().areaType() == SkillEffect.AreaType.STATIC
-                    ? new Color(255, 160, 84, 52)
-                    : new Color(95, 214, 255, 52);
-                Color border = skill.effect().areaType() == SkillEffect.AreaType.STATIC
-                    ? new Color(255, 191, 117, 170)
-                    : new Color(148, 235, 255, 170);
-            g2.setColor(overlay);
-            g2.fillRoundRect(x + 6, y + 6, cellW - 12, cellH - 12, 16, 16);
-            g2.setColor(border);
-            g2.setStroke(new BasicStroke(2f));
-            g2.drawRoundRect(x + 6, y + 6, cellW - 12, cellH - 12, 16, 16);
-        }
-
-        private void drawUnit(Graphics2D g2, int x, int y, int cellW, int cellH, MageArchetype archetype, boolean player, String tag) {
-            int unitW = (int) (cellW * 0.56);
-            int unitH = (int) (cellH * 0.74);
-            int ux = x + (cellW - unitW) / 2;
-            int uy = y + (cellH - unitH) / 2 + 4;
-
-            Color robeColor = switch (archetype) {
-                case ELEMENTALIST -> new Color(230, 114, 72);
-                case RUNE_SCHOLAR -> new Color(120, 132, 219);
-                case APPRENTICE -> new Color(128, 168, 220);
-            };
-
-            g2.setColor(new Color(0, 0, 0, 100));
-            g2.fillOval(ux + 6, uy + unitH - 8, unitW - 12, 14);
-
-            g2.setColor(robeColor);
-            int[] robeX = {ux + unitW / 2, ux + unitW - 6, ux + 6};
-            int[] robeY = {uy + 12, uy + unitH, uy + unitH};
-            g2.fillPolygon(robeX, robeY, 3);
-
-            g2.setColor(new Color(245, 224, 200));
-            int headSize = Math.max(14, (int) (unitW * 0.28));
-            g2.fillOval(ux + (unitW - headSize) / 2, uy + 2, headSize, headSize);
-
-            g2.setColor(player ? new Color(255, 255, 255, 220) : new Color(255, 239, 153));
-            g2.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 11f));
-            g2.drawString(tag, ux + 8, uy - 2);
-        }
-
-        private Color blend(Color a, Color b, double ratio) {
-            ratio = Math.max(0.0, Math.min(1.0, ratio));
-            int red = (int) Math.round(a.getRed() * (1.0 - ratio) + b.getRed() * ratio);
-            int green = (int) Math.round(a.getGreen() * (1.0 - ratio) + b.getGreen() * ratio);
-            int blue = (int) Math.round(a.getBlue() * (1.0 - ratio) + b.getBlue() * ratio);
-            return new Color(red, green, blue);
-        }
-
-        private int clamp(int value, int min, int max) {
-            return Math.max(min, Math.min(max, value));
-        }
-
-        private String positionText(MapCellPosition position) {
-            return "(" + position.col() + "," + position.row() + ")";
-        }
-
-        private MageArchetype currentOrBotArchetype() {
-            if (botSpec == null) {
-                return MageArchetype.APPRENTICE;
-            }
-            String title = botSpec.title();
-            if (MageArchetype.ELEMENTALIST.displayName().equals(title)) {
-                return MageArchetype.ELEMENTALIST;
-            }
-            if (MageArchetype.RUNE_SCHOLAR.displayName().equals(title)) {
-                return MageArchetype.RUNE_SCHOLAR;
-            }
-            return MageArchetype.APPRENTICE;
-        }
-
-        private void drawInfo(Graphics2D g2, String message, int w, int h) {
-            g2.setColor(new Color(20, 24, 35, 180));
-            g2.fillRoundRect(12, h - 42, Math.min(320, w - 24), 28, 12, 12);
-            g2.setColor(Color.WHITE);
-            g2.setFont(DEFAULT_FONT.deriveFont(Font.BOLD, 12f));
-            g2.drawString(message, 22, h - 23);
-        }
+        return new Color(Integer.parseInt(hex.substring(1), 16));
     }
 }

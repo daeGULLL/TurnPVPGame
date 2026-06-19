@@ -44,8 +44,11 @@ public final class ArchetypeUnlockService {
         if (reason.isPresent()) {
             return false;
         }
-        progress.selectArchetype(archetype);
-        return true;
+        if (!progress.hasSelectedArchetype()) {
+            progress.selectArchetype(archetype);
+            return true;
+        }
+        return progress.promoteArchetype(archetype);
     }
 
     public static List<MageArchetype> unlockedByTier(MageProgress progress) {
@@ -59,9 +62,6 @@ public final class ArchetypeUnlockService {
 
     public static List<MageArchetype> autoUnlockEligible(MageProgress progress) {
         List<MageArchetype> selectable = new ArrayList<>();
-        if (progress.hasSelectedArchetype()) {
-            return selectable;
-        }
         for (MageArchetype archetype : MageArchetype.values()) {
             if (lockReason(archetype, progress).isEmpty()) {
                 selectable.add(archetype);

@@ -15,8 +15,8 @@ public class RuinsMapFactory extends MapFactory {
         3,
         List.of(
             ".P.",
-            "P#P",
-            ".P."
+            "S#.",
+            ".S."
         )
     );
     }

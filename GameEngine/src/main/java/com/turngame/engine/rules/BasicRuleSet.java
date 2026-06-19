@@ -46,6 +46,7 @@ public class BasicRuleSet implements RuleSet {
             if (!session.hasPlayer(attack.targetId()) || attack.actorId().equals(attack.targetId())) {
                 return false;
             }
+
             PlayerState actor = session.getPlayerState(attack.actorId());
             return session.getPlayerState(attack.targetId()).isAlive()
                     && actor.hasEnergy(ATTACK_ENERGY_COST)
@@ -67,9 +68,22 @@ public class BasicRuleSet implements RuleSet {
             }
 
             Optional<MapCellPosition> actorPos = session.getPlayerPosition(skill.actorId());
-            Optional<MapCellPosition> targetPos = session.getPlayerPosition(skill.targetId());
-            if (actorPos.isEmpty() || targetPos.isEmpty()) {
+            if (actorPos.isEmpty()) {
                 return false;
+            }
+
+            if ((skill.targetCol() == null) != (skill.targetRow() == null)) {
+                return false;
+            }
+
+            if (skill.targetCol() != null) {
+                if (!session.isInsideMap(skill.targetCol(), skill.targetRow())) {
+                    return false;
+                }
+                MapCellPosition aimedCell = new MapCellPosition(skill.targetCol(), skill.targetRow());
+                if (!isWithinSkillRange(skillTemplate.get(), actorPos.get(), aimedCell)) {
+                    return false;
+                }
             }
 
             // 에너지 검사
@@ -91,18 +105,7 @@ public class BasicRuleSet implements RuleSet {
             if (actor == null || !actor.isAlive()) {
                 return false;
             }
-
-            if (!session.isInsideMap(move.targetCol(), move.targetRow())) {
-                return false;
-            }
-
-            Optional<MapCellPosition> currentPos = session.getPlayerPosition(move.actorId());
-            Optional<MapCellPosition> projectedPos = session.getProjectedPlayerPosition(move.actorId());
-            if (currentPos.isEmpty() || projectedPos.isEmpty()) {
-                return false;
-            }
-
-            if (!actor.canMoveNow(move.requestedAtMs())) {
+            if (session.isMoveLockedThisWindow(move.actorId()) || session.hasPendingSlowLanding(move.actorId())) {
                 return false;
             }
 
@@ -110,14 +113,6 @@ public class BasicRuleSet implements RuleSet {
                 return false;
             }
             if (!actor.canSpendEnergyThisWindow(MOVE_ENERGY_COST)) {
-                return false;
-            }
-
-            if (!actor.canReachCell(
-                    projectedPos.get().col(),
-                    projectedPos.get().row(),
-                    move.targetCol(),
-                    move.targetRow())) {
                 return false;
             }
 
@@ -132,7 +127,9 @@ public class BasicRuleSet implements RuleSet {
         if (action instanceof AttackAction attack) {
             PlayerState actor = session.getPlayerState(attack.actorId());
             PlayerState target = session.getPlayerState(attack.targetId());
-            target.takeDamage(attack.damage());
+            if (areOrthogonallyAdjacent(session, attack.actorId(), attack.targetId())) {
+                target.takeDamage(attack.damage());
+            }
             actor.drainEnergy(ATTACK_ENERGY_COST);
             actor.clearDefense();
             target.clearDefense();
@@ -159,17 +156,36 @@ public class BasicRuleSet implements RuleSet {
 
                 Optional<MapCellPosition> actorPos = session.getPlayerPosition(skill.actorId());
                 Optional<MapCellPosition> targetPos = session.getPlayerPosition(skill.targetId());
-                if (actorPos.isEmpty() || targetPos.isEmpty()) {
+                if (actorPos.isEmpty()) {
                     actor.drainEnergy(template.failEnergyCost());
                     actor.clearDefense();
                     target.clearDefense();
                     return;
                 }
-                
-                boolean inRange = isWithinSkillRange(template, actorPos.get(), targetPos.get());
+
+                MapCellPosition aimedCell = null;
+                if (skill.targetCol() != null && skill.targetRow() != null) {
+                    aimedCell = new MapCellPosition(skill.targetCol(), skill.targetRow());
+                } else if (targetPos.isPresent()) {
+                    aimedCell = targetPos.get();
+                }
+                if (aimedCell == null) {
+                    actor.drainEnergy(template.failEnergyCost());
+                    actor.clearDefense();
+                    target.clearDefense();
+                    return;
+                }
+
+                boolean inRange = isWithinSkillRange(template, actorPos.get(), aimedCell);
+                boolean targetOnAimedCell = targetPos.isPresent()
+                        && targetPos.get().col() == aimedCell.col()
+                        && targetPos.get().row() == aimedCell.row();
+                boolean requiresExactAimedTile = skill.targetCol() != null && skill.targetRow() != null;
 
                 // 사거리 안에서만 실제 피해가 적용됨
-                boolean success = inRange && SkillResolver.resolveSuccess(template, actor);
+                boolean success = inRange
+                        && (!requiresExactAimedTile || targetOnAimedCell)
+                        && SkillResolver.resolveSuccess(template, actor);
                 if (success) {
                     int resolvedDamage = DamageResolver.calculateFinalDamage(template, skill.damage(), target, session);
                     target.takeDamage(resolvedDamage);
@@ -193,6 +209,22 @@ public class BasicRuleSet implements RuleSet {
 
         if (action instanceof MoveAction move) {
             PlayerState actor = session.getPlayerState(move.actorId());
+            if (actor == null) {
+                return;
+            }
+
+            Optional<MapCellPosition> currentPos = session.getPlayerPosition(move.actorId());
+            boolean validMove = currentPos.isPresent()
+                    && session.isInsideMap(move.targetCol(), move.targetRow())
+                    && session.isPassableCell(move.targetCol(), move.targetRow())
+                    && actor.canReachCell(currentPos.get().col(), currentPos.get().row(), move.targetCol(), move.targetRow());
+
+            if (!validMove) {
+                actor.drainEnergy(MOVE_ENERGY_COST);
+                actor.clearDefense();
+                return;
+            }
+
             Optional<String> occupantId = session.getPlayerIdAt(move.targetCol(), move.targetRow(), move.actorId());
             if (occupantId.isPresent()) {
                 resolveCollisionMove(session, move.actorId(), occupantId.get(), move.targetCol(), move.targetRow(), move.requestedAtMs());
@@ -243,7 +275,7 @@ public class BasicRuleSet implements RuleSet {
         int step = direction < 0 ? -1 : 1;
         int startCol = targetCol + step;
         for (int col = startCol; session.isInsideMap(col, row); col += step) {
-            if (!session.isCellOccupied(col, row, null)) {
+            if (session.isPassableCell(col, row) && !session.isCellOccupied(col, row, null)) {
                 return new MapCellPosition(col, row);
             }
         }
@@ -256,12 +288,22 @@ public class BasicRuleSet implements RuleSet {
         }
 
         SkillEffect effect = skillTemplate.effect();
+        if (effect.areaType() == SkillEffect.AreaType.STATIC) {
+            int deltaCol = targetPos.col() - actorPos.col();
+            int deltaRow = targetPos.row() - actorPos.row();
+            return effect.includesOffset(deltaCol, deltaRow);
+        }
+
         int radius = Math.max(0, effect.areaRadius());
-        int distance = switch (effect.areaType()) {
-            case STATIC -> actorPos.manhattanDistanceTo(targetPos);
-            case DYNAMIC -> actorPos.chebyshevDistanceTo(targetPos);
-        };
-        return distance <= radius;
+        return actorPos.chebyshevDistanceTo(targetPos) <= radius;
+    }
+
+    private boolean areOrthogonallyAdjacent(GameSession session, String actorId, String targetId) {
+        Optional<MapCellPosition> actorPos = session.getPlayerPosition(actorId);
+        Optional<MapCellPosition> targetPos = session.getPlayerPosition(targetId);
+        return actorPos.isPresent()
+                && targetPos.isPresent()
+                && actorPos.get().manhattanDistanceTo(targetPos.get()) == 1;
     }
 
     @Override

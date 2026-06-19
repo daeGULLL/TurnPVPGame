@@ -2,9 +2,11 @@ package com.magefight.content.factory;
 
 import com.magefight.content.factory.character.MageCharacterFactoryProvider;
 import com.magefight.content.factory.skill.MageSkillTreeFactory;
+import com.magefight.content.factory.skill.MageSkillVisualFactory;
 import com.magefight.content.model.FighterSpec;
 import com.magefight.content.model.MageArchetype;
 import com.magefight.content.model.MageSkillTree;
+import com.magefight.content.model.SkillVisualProfile;
 import com.magefight.content.progress.MageProgress;
 import com.turngame.domain.character.GameCharacter;
 import com.turngame.domain.enums.CharacterType;
@@ -76,6 +78,10 @@ public class GamePresetFactory {
     }
 
     public BattleMap createMap(String mapName) { return MapFactoryProvider.getMap(mapName).createMap(); }
+
+    public List<SkillVisualProfile> createSkillVisualProfiles() {
+        return MageSkillVisualFactory.createAll();
+    }
 
     private List<SkillTemplate> mergeSkills(List<SkillTemplate> baseSkills, List<SkillTemplate> learnedTreeSkills) {
         Map<String, SkillTemplate> merged = new LinkedHashMap<>();

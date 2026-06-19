@@ -14,7 +14,7 @@ public class ForestMapFactory extends MapFactory {
         3,
         3,
         List.of(
-            "T.T",
+            "TST",
             ".#.",
             "T.T"
         )
