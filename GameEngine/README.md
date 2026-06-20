@@ -35,8 +35,11 @@ java -cp target/turngame-engine-1.0.0.jar com.turngame.ai.BotPlayerAgent 127.0.0
 ```
 
 ## 구현 상태
-- `JOIN`, `MATCH_STARTED`, `ACTION`, `STATE_UPDATED` JSON 메시지 처리
-- `ACTION` 4종: `ATTACK`, `USE_SKILL`, `DEFEND`, `END_TURN`
+- HTTP 릴레이 서버: REST 엔드포인트(`/api/join`, `/api/action`, `/api/events`, `/api/events/stream`, `/api/disconnect`, `/health`) + WebSocket(`/events`, port+1)
+- 서버→클라 이벤트 전송: 플레이어별 이벤트 큐(seq)를 WebSocket / SSE / 롱폴링으로 전달 (가만히 있어도 상대 행동·정산을 수신)
+- `JOIN`/`FIND_GAME`, `MATCHED`, `MATCH_STARTED`, `ACTION`, `STATE_UPDATED`, `GAME_ENDED` 등 JSON 메시지 처리
+- `ACTION` 5종: `ATTACK`, `USE_SKILL`, `DEFEND`, `MOVE`, `END_TURN` (+ `SURRENDER`)
+- 윈도우 단위 동시 정산: 양쪽 `END_TURN` 시 큐의 행동을 단계별로 동시에 적용하고 before/after 스냅샷(`ResolutionStep`)을 전송
 - 턴 타임아웃: `ScheduledExecutorService` 기반 자동 `END_TURN`
 - AI 봇 연결: `STATE_UPDATED`를 보고 자동 행동
 - 서버 입력 검증: 매치 불일치, 잘못된 `actionType`, 데미지 범위, 사망 플레이어 행동 제한

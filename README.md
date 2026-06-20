@@ -17,14 +17,14 @@
 - ✅ **개략적 설계와 요구사항 기획**: 이벤트-드리븐 구조로 느슨한 결합을 목표로 한 아키텍처 기획
 - ✅ **미니프로젝트 규모**: 완전한 네트워크 게임 엔진 + GUI 클라이언트
 
-**GameEngine**은 소켓 통신 기반의 멀티플레이어 게임 서버와 콘솔 클라이언트를 제공하며, **MageFight**는 Swing GUI를 통해 완성도 높은 게임 클라이언트 경험을 제공합니다.
+**GameEngine**은 HTTP 릴레이 기반의 멀티플레이어 게임 서버(REST + WebSocket + SSE + 롱폴링)와 콘솔 클라이언트를 제공하며, **MageFight**는 Swing GUI를 통해 완성도 높은 게임 클라이언트 경험을 제공합니다.
 
 분리 목적은 명확합니다. **GameEngine은 다른 게임에도 재활용 가능한 공용 엔진**으로 유지하고, MageFight는 그 엔진 위에 얹는 게임별 콘텐츠와 UI로 분리했습니다. 즉, 엔진은 범용 로직을 담당하고 MageFight는 마도사 테마에 맞는 아키타입, 스킬 트리, 진행 규칙, 전투 UI를 담당합니다.
 
 본 프로젝트에서 제가 주도적으로 수행한 부분은 **게임 동작에 대한 개략적인 소프트웨어 아키텍처 설계**와 **MageFight의 핵심 게임 요소(직업, 진행도, 스킬 트리, UI 구조) 기획**입니다. 상세 구현은 AI 보조 도구를 활용해 확장했으며, 생성된 코드는 제가 직접 전수 검토하고 다듬어 완성도를 높였습니다.
 
 주요 특징:
-- 네트워크 기반 멀티플레이어 턴제 전투 시스템 (소켓 기반)
+- 네트워크 기반 멀티플레이어 턴제 전투 시스템 (HTTP 릴레이 서버 + WebSocket/SSE/롱폴링 폴백)
 - JSON 프로토콜을 통한 구조화된 서버-클라이언트 통신
 - AI 봇 플레이어 자동 전투 기능
 - 스레드 타임아웃 기반 자동 턴 진행
@@ -99,7 +99,7 @@
   ```java
   scheduler.schedule(() -> submitAction(new EndTurnAction(playerId)), 30, TimeUnit.SECONDS);
   ```
-- **Thread 풀 관리**: `ServerSocket` + 스레드 풀로 다중 클라이언트 동시 처리
+- **Thread 풀 관리**: `HttpServer` + 스레드 풀(`ExecutorService`)로 다중 요청 동시 처리, 플레이어별 이벤트 큐를 통한 비동기 전송
 - **동시성 문제 해결**:
   - `synchronized` 또는 `ReentrantLock`을 통한 공유 자원 보호
   - 플레이어 상태 및 게임 세션의 스레드 안전성 확보
@@ -119,7 +119,8 @@
 - `BorderLayout`, `BoxLayout`: 레이아웃 관리
 
 ### 네트워크 통신
-- **Socket 프로그래밍**: TCP 기반 클라이언트-서버 통신
+- **HTTP 릴레이 서버**: `com.sun.net.httpserver.HttpServer` 기반 REST 엔드포인트(`/api/join`, `/api/action`, `/api/events`, `/api/events/stream`, `/api/disconnect`)
+- **실시간 전송**: WebSocket(Tyrus, port+1) + SSE + 롱폴링을 폴백 체인으로 사용해 이벤트 전달
 - **JSON 직렬화**: `Gson` 라이브러리 사용 (메시지 프로토콜)
 
 ---
@@ -129,20 +130,23 @@
 ### GameEngine 모듈
 
 #### Core Engine (`com.turngame.engine`)
-- `GameSession`: 게임 세션 관리 (플레이어, 턴, 액션 처리)
-- `TurnManager`: 턴 순서 관리
-- `BattleMap`: 전투 맵 정보
-- `FighterSpec`: 플레이어 상태 (HP, 스탯, 스킬)
+- `GameSession`: 게임 세션 관리 (행동 큐 → 정산 → 승패 판정)
+- `TurnManager`: 윈도우/턴 순서 및 ready 관리
+- `rules.BasicRuleSet`: 액션 검증·적용·승패 판정 (Strategy)
+- `command.*`: 게임 액션 커맨드 (Command)
+
+> 도메인 모델은 `com.turngame.domain`에 있습니다: `PlayerState`(HP/에너지/스탯), `BattleMap`/`MapCellPosition`, `skill.SkillTemplate` 등. (플레이어 스펙 `FighterSpec`은 콘텐츠 모듈 `com.magefight.content.model`에 있습니다.)
 
 #### Server (`com.turngame.server`)
-- `HttpRelayServerMain`: 서버 진입점 (포트 및 최대 플레이어 설정)
-- `HttpRelayServer`: 멀티 클라이언트 관리 및 게임 세션 조율 (HTTP relay)
-- `ClientHandler`: 개별 클라이언트 연결 처리
-- `AccountStore`: 플레이어 계정 저장
+- `HttpRelayServerMain`: 서버 진입점 (포트 및 턴 타임아웃 설정)
+- `HttpRelayServer`: 멀티 클라이언트 매칭/이벤트 큐/게임 세션 조율 (HTTP relay)
+  - HTTP 핸들러: `JoinHandler`, `ActionHandler`, `EventsHandler`(롱폴), `EventStreamHandler`(SSE), `DisconnectHandler`
+- `GameWebSocketEndpoint`: 실시간 양방향 전송용 WebSocket(`/events`, port+1)
+- `account.AccountStore`: 플레이어 계정/캐릭터 프로필 저장
+- `protocol.*`: `RequestMessage` / `ResponseMessage`
 
 #### Client (`com.turngame.client`)
-- `ConsoleClient`: 콘솔 기반 플레이어 클라이언트
-- `GameClient`: 서버와의 통신 로직
+- `ConsoleClient`: 콘솔 기반 플레이어 클라이언트 (개발/테스트용)
 
 #### AI (`com.turngame.ai`)
 - `BotPlayerAgent`: 자동 행동 AI 플레이어
@@ -174,7 +178,9 @@
 - `MageFightLauncher`: 로그인 및 로비 화면
 - `MageFightFrame`: 전투 UI 및 게임 플레이 화면
 - `SkillTreePanel`: 도형 기반 스킬 트리 렌더링 및 습득 UI
-- `FirstPersonBattlePanel`: 1인칭 전투 시각화
+- `BattleViewPanel`: 전투 보드(1인칭 뷰 포함) 시각화
+- `GameNetworkClient`: WS/SSE/롱폴 네트워크 추상화
+- `OnlineStateSyncService`: 서버 상태(STATE_UPDATED) → 로컬 GameSession 스냅샷
 
 이 모듈은 실제 사용자가 보는 **클라이언트 껍데기(UI shell)** 입니다. 로그인, 로비, 전투 화면 전환, 스킬 선택, 결과 표시 같은 상호작용을 맡고, 콘텐츠나 전투 규칙은 `magefight-content`와 `turngame-engine`에 위임합니다.
 
@@ -249,9 +255,9 @@ MageFight → src/main/java/com/magefight/MageFightApp.java
 ### 📌 GameEngine 핵심 구현
 
 #### 1. **멀티플레이어 네트워크 아키텍처** (멀티스레드 기초)
-- `ServerSocket` + `ClientHandler` 스레드로 다중 클라이언트 동시 처리
-- 각 클라이언트마다 별도의 스레드에서 독립적인 게임 진행
-- JSON 기반 프로토콜로 구조화된 메시지 통신
+- `HttpServer` + 스레드 풀(`ExecutorService`)로 다중 요청 동시 처리
+- 플레이어별 **이벤트 큐**(단조 증가 seq)에 상태/정산 이벤트를 쌓고, WebSocket·SSE·롱폴링 중 연결된 경로로 비동기 전송
+- JSON 기반 프로토콜(`Gson`)로 구조화된 메시지 통신
 
 #### 2. **이벤트 기반 아키텍처** (Observer Pattern + 제네릭)
 - **제네릭 EventBus**: `EventBus<T extends GameEvent>` 타입 안전성 확보

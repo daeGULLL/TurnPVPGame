@@ -1,223 +1,276 @@
 # MageFight
 
-MageFight는 Turn Game Engine 위에서 동작하는 전투형 게임 클라이언트입니다.
-프로젝트의 핵심 목표는 엔진과 게임 콘텐츠/UI를 분리해 재사용성과 확장성을 확보하는 것입니다.
+MageFight는 재사용 가능한 턴제 전투 엔진(`turngame-engine`) 위에 얹힌 **콘텐츠 + 표현 계층**입니다. 두 개의 Maven 모듈로 나뉩니다.
 
-## 모듈 구성
+- `magefight-content`: 아키타입, 스킬 트리, 성장/해금 규칙, 프리셋 팩토리 등 **게임 고유 데이터 모델**.
+- `magefight-client`: Swing 기반 **런처와 전투 UI**, 그리고 서버와 통신하는 네트워크 클라이언트.
 
-- `GameEngine`
-  - 턴 처리, 액션 검증, 상태 동기화, 매치메이킹, 재접속 처리, 리플레이 기록 담당
-- `MageFight`
-  - `magefight-content`: 아키타입, 스킬 트리, 성장/해금 규칙
-  - `magefight-client`: Swing 기반 런처, 로비, 전투 UI
+이 분리는 게임 고유 규칙을 엔진(`GameEngine` = `turngame-engine`)과 떼어 두기 위한 의도된 설계입니다. 엔진은 도메인/규칙/네트워크 서버를 제공하고, MageFight는 그 위에서 콘텐츠와 화면을 담당합니다.
 
-## 전투 처리 방식 (현재 구현 기준)
+화면의 목표는 단순한 텍스트 나열이 아니라, 로그인부터 로비, 아키타입 성장, 스킬 해금, 전투 정산까지 한 번에 읽히는 전투형 UI를 만드는 것입니다.
 
-- 전투는 윈도우(window) 기반 동시 행동 처리 방식입니다.
-- 각 플레이어는 윈도우 동안 행동을 큐에 쌓고, `END_TURN`으로 확정합니다.
-- 양쪽이 준비되면 서버가 큐를 정산하고 결과를 상태 이벤트로 전파합니다.
-- 클라이언트는 `resolutionSteps`를 받아 단계별 전투 연출을 재생합니다.
+> 모듈 분리 근거와 설계 원칙은 [DESIGN-NOTE.md](DESIGN-NOTE.md), 엔진/프로토콜 상세는 [GameEngine/PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md)도 함께 참고하세요.
 
-즉, 실시간 즉시 반영형이 아니라 정산형 턴제 구조입니다.
+---
+
+## 워크스페이스 구조
+
+```
+workspace/                       (root pom: workspace-root)
+├── GameEngine/                  artifact: turngame-engine  (Java 17)
+│   └── com.turngame
+│       ├── domain/              핵심 도메인 모델
+│       │   ├── character/       GameCharacter (스탯/보너스)
+│       │   ├── skill/           SkillTemplate, SkillEffect, SkillDependency, SkillCounter
+│       │   ├── map/             BattleMap, MapCellPosition
+│       │   ├── defense/         DefenseState, EvadeWindow
+│       │   ├── enums/           ActionType, CharacterType
+│       │   ├── PlayerState      HP/에너지/방어 등 플레이어 상태
+│       │   └── PlayerSkillMastery
+│       ├── engine/              게임 진행 코어
+│       │   ├── GameSession      상태 머신 (행동 큐 → 정산 → 승패)
+│       │   ├── TurnManager      윈도우/턴 순서/ready 관리
+│       │   ├── command/         GameAction: Attack/Defend/UseSkill/Move/EndTurn
+│       │   └── rules/           RuleSet, BasicRuleSet, SkillResolver, DamageResolver
+│       ├── event/               EventBus + Turn/Action/GameEnded 이벤트
+│       ├── factory/             character/skill/map 팩토리 (+Provider)
+│       ├── replay/              ReplayRecorder (이벤트 기록)
+│       └── server/              네트워크 릴레이 서버
+│           ├── HttpRelayServerMain   서버 진입점 (main)
+│           ├── HttpRelayServer       REST + 이벤트 큐 + 매칭
+│           ├── GameWebSocketEndpoint WebSocket(/events)
+│           ├── account/AccountStore  계정/캐릭터 프로필
+│           └── protocol/             Request/ResponseMessage
+│
+└── MageFight/                   parent: magefight-parent
+    ├── magefight-content/       artifact: magefight-content
+    │   └── com.magefight.content
+    │       ├── factory/         GamePresetFactory (스펙/스킬트리/맵 생성)
+    │       ├── model/           FighterSpec, MageArchetype, MageSkillTree, SkillTreeNode…
+    │       └── progress/        MageProgress, 성장/해금/승급 서비스
+    └── magefight-client/        artifact: magefight-client (shade → -all.jar)
+        └── com.magefight
+            ├── MageFightApp           클라이언트 진입점
+            └── ui/
+                ├── MageFightLauncher       로그인·계정·아키타입·캐릭터 커스터마이즈
+                ├── MageFightFrame          전투 프레임 (BattleViewPanel.Host)
+                ├── LobbyPanel              매칭 로비 (연결/Find Game)
+                ├── BattleViewPanel         전투 보드 렌더링
+                ├── SkillTreePanel          스킬트리 시각화/습득
+                ├── GameNetworkClient       WS/SSE/Polling 네트워크 추상화
+                └── OnlineStateSyncService  서버 상태 → 로컬 GameSession 스냅샷
+```
+
+### 모듈 의존 방향
+
+```
+magefight-client  ─▶  magefight-content  ─▶  turngame-engine
+        └───────────────────────────────────▶  turngame-engine
+```
+
+엔진은 어느 것에도 의존하지 않습니다. 콘텐츠는 엔진 도메인만 사용하고, 클라이언트는 둘 다 사용합니다.
+
+---
+
+## 핵심 설계
+
+### 턴/윈도우 + 동시 정산
+
+- 한 "윈도우(window)" 동안 각 플레이어는 **여러 행동을 큐에 쌓을** 수 있습니다(이동·공격·스킬·방어). 이때 화면은 즉시 바뀌지 않습니다.
+- 양쪽이 모두 `END_TURN`을 보내면, 서버가 큐에 쌓인 행동을 **단계별(step)로 동시에 정산**합니다.
+- 각 정산 단계는 `ResolutionStep`(단계별 before/after HP·위치)으로 기록되고, 클라이언트는 이를 받아 **차근차근 연출**로 재생합니다.
+- 정산 후 에너지가 리셋되고 다음 윈도우로 넘어갑니다(`TurnManager.nextTurn()`).
+
+### 자원/이동 규칙
+
+- 각 행동은 에너지를 소비하며, **윈도우당 사용 가능한 에너지 상한**(`maxEnergySpendPerWindow`, 아키타입별)이 행동 횟수를 제한합니다.
+- 이동은 `moveRange`(기본 1칸)로 **1회 이동 거리**가 제한되고, **이동 횟수는 에너지**가 제한합니다. 충돌 시 양쪽이 밀려납니다.
+- 공격은 인접(직교) 시에만 적중하고, 스킬은 `SkillEffect`의 범위(반경/패턴)와 성공 확률로 판정됩니다.
+
+### 스킬
+
+- `SkillTemplate`: 데미지/쿨다운/성공확률/에너지비용/시전시간/범위효과 + **스킬 간 상호작용**(`dependencies` 버프, `counters` 무효화/감소).
+- 쿨다운은 윈도우마다 감소하고, 숙련도(`PlayerSkillMastery`)로 성공률·시전시간이 변합니다.
+
+### 성장/해금 (magefight-content)
+
+- `MageProgress`가 승수·선택 아키타입·스킬 숙련도·영감(inspiration) 포인트를 보관합니다.
+- 스킬트리(`MageSkillTree`)에서 영감을 소비해 노드를 **습득**하고, 조건을 만족하면 상위 아키타입으로 **승급**합니다.
+- 온라인 매칭 시 클라이언트는 `GamePresetFactory.createPlayerSpec(아키타입, progress)`로 만든 **전체 스킬셋과 캐릭터 외형**을 서버로 전송합니다.
+
+---
+
+## 네트워크 아키텍처
+
+> 과거 문서의 "TCP Socket / ClientHandler" 설명은 더 이상 유효하지 않습니다. 실제 구조는 **HTTP 릴레이 서버 + 이벤트 큐**이며, 클라이언트는 여러 전송 방식을 폴백 체인으로 사용합니다.
+
+```
+   클라이언트 A (magefight-client)        클라이언트 B
+        │  REST(액션/조인)  ▲ 이벤트            │
+        ▼                  │                    ▼
+ ┌───────────────────────────────────────────────────┐
+ │  HttpRelayServer  (turngame-engine, 기본 :9090)     │
+ │   REST:  /api/join  /api/action  /api/disconnect    │
+ │          /api/events(long-poll)  /api/events/stream(SSE)  /health │
+ │   WebSocket: GameWebSocketEndpoint  /events  (:9091 = port+1)     │
+ │   내부: 플레이어별 이벤트 큐(seq), 매칭, 정산(GameSession)         │
+ └───────────────────────────────────────────────────┘
+```
+
+- **서버 → 클라이언트 이벤트 전송**: 플레이어별 **이벤트 큐**(단조 증가 seq)에 쌓고, 연결된 전송 수단으로 내보냅니다.
+- **클라이언트 수신 전송 폴백**(`GameNetworkClient.connectionMode`): `0 = WebSocket`, `1 = SSE`, `2 = long-poll`. 어떤 경로가 막혀도 가만히 있는 쪽이 이벤트(상대 행동/정산/매치 종료)를 놓치지 않도록 설계되어 있습니다.
+- **액션 전송**은 결정적 ack/에러 처리를 위해 항상 HTTP `POST /api/action`을 사용합니다.
+
+### 주요 메시지 타입
+
+**클라이언트 → 서버** (`RequestMessage`): `JOIN` / `FIND_GAME`, `ACTION`(actionType: `ATTACK|DEFEND|USE_SKILL|MOVE|END_TURN`, 또는 `SURRENDER`), `RESUME`, `DISCONNECT`, `PING`.
+
+**서버 → 클라이언트** (`ResponseMessage`): `JOINED`, `MATCHED`, `MATCH_STARTED`, `STATE_UPDATED`, `GAME_ENDED`(reason: `HP_ZERO|PLAYER_SURRENDERED|PLAYER_ABANDONED`), `PLAYER_DISCONNECTED` / `PLAYER_RECONNECTED` / `MATCH_RESUMED`, `ERROR`.
+
+`STATE_UPDATED.payload`는 `matchId`, `turnPlayerId`, `windowIndex`, `players[]`(hp/energy/position/skills/cooldown 등), `resolvedWindowIndex`, `resolutionSteps[]`(정산 연출) 등을 포함합니다. 전체 스키마는 [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md) 참고.
+
+---
 
 ## 빌드
 
-1. 먼저 `GameEngine`을 빌드해 로컬 Maven 저장소에 설치합니다.
-2. 가능하면 최상위 `pom.xml`(workspace root)에서 두 프로젝트를 함께 로드합니다.
-3. `MageFight` 디렉터리에서 `mvn package`를 실행합니다.
+1. 최상위 [workspace root](../pom.xml)를 열면 `GameEngine`과 `MageFight`가 함께 로드됩니다. (IntelliJ는 루트 `pom.xml`을 import)
+2. `GameEngine`이 먼저 빌드되어 로컬 Maven 저장소에 설치되어 있어야 합니다.
+3. `MageFight` 디렉터리에서 `mvn package`를 실행하면 두 모듈이 함께 빌드되고, `magefight-client`에서 실행용 fat JAR(`magefight-client-1.0.0-all.jar`)이 만들어집니다.
 
-권장 순서:
+> Java 17 기준입니다.
+
+## 실행
+
+클라이언트 진입점은 `com.magefight.MageFightApp`, 서버 진입점은 `com.turngame.server.HttpRelayServerMain`입니다.
+
+### 로컬 게임 (싱글플레이 vs 봇)
+
+1. `MageFightApp` 실행
+2. 로그인 후 "Start Battle (Local)" 클릭
+3. 봇(AI)과 싱글플레이 시작
+
+개발/테스트용으로는 IDE에서 `com.magefight.MageFightApp`을 직접 실행하는 방식이 가장 간단합니다. CLI로 실행하려면:
 
 ```bash
 cd GameEngine
 mvn clean package
 
 cd ../MageFight
-mvn clean package
+mvn -pl magefight-client -am exec:java -Dexec.mainClass=com.magefight.MageFightApp
 ```
 
-## 실행
+`magefight-client`는 `magefight-content`와 `GameEngine`에 의존하므로 단일 plain JAR만으로는 실행되지 않습니다. 배포에는 아래 릴리스 번들을 사용하세요.
 
-- 클라이언트 진입점: `com.magefight.MageFightApp`
-- IDE에서는 루트 `pom.xml` 기준으로 모듈을 함께 열어 실행하는 방식을 권장합니다.
+### 온라인 멀티플레이
 
-### 로컬 게임 (싱글플레이)
+**1. 서버 빌드 & 실행** (호스팅 머신)
+```bash
+cd GameEngine
+mvn clean package
 
-1. MageFightApp 실행
-2. 로그인 후 "Start Battle (Local)" 클릭
-3. 봇과 전투 시작
+# 인자: <httpPort> <턴 타임아웃 초>. HTTP=9090, WebSocket=9091(port+1) 사용
+java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
+```
 
-## 온라인 멀티플레이 (현재 네트워크 구조)
+**2. Cloudflare 설정**
+- DNS A 레코드: `game.yeunsuh.online`(또는 `yeunsuh.online`) → 서버 IP
+- SSL/TLS: Full (strict) 또는 Flexible
+- 방화벽에서 9090(+ WebSocket용 9091) 허용
+- 주의: Cloudflare 프록시(오렌지 구름)가 켜진 상태에서는 커스텀 포트 9090이 차단될 수 있습니다. 게임 서브도메인을 **DNS only(회색 구름)**로 두거나, Cloudflare 지원 포트로 변경하세요. 클라이언트는 `:9090` 직결 실패 시 자동으로 `https://game.yeunsuh.online` 경로로 폴백합니다.
 
-기존 단순 TCP 소켓 1:1 모델 설명은 현재 코드와 다릅니다.
-현재는 HTTP Relay 중심 + 이벤트 채널 구조입니다.
+**3. 클라이언트 연결**
+1. `MageFightApp` 실행 → 로그인 → 아키타입/캐릭터 설정
+2. "Find Online Match" → 로비에서 호스트/포트/닉네임 확인
+3. "Find Game" → 상대 매칭 대기 → 매칭되면 전투 시작
 
-### 서버
+---
 
-- 서버 진입점: `com.turngame.server.HttpRelayServerMain`
-- 주요 API 컨텍스트:
-  - `/api/join`
-  - `/api/action`
-  - `/api/events`
-  - `/api/events/stream`
-  - `/api/disconnect`
-  - `/api/resume`
-- 상태 확인: `/health`
-- WebSocket 서버는 HTTP 포트 + 1 포트에서 동작
+## 배포 (다른 사람에게 전달)
 
-### 클라이언트 연결/진행 흐름
-
-1. 로비에서 `Find Game` 요청
-2. 매칭 수신 (`MATCHED`)
-3. 전투 시작 신호 및 상태 동기화 (`MATCH_STARTED`, `STATE_UPDATED`)
-4. 플레이어 액션은 HTTP `/api/action`으로 전송
-5. 이벤트는 WebSocket 우선 수신, 필요 시 즉시 동기화 요청
-
-### 이벤트 전달과 동기화
-
-- 서버 이벤트는 시퀀스(`_eventSeq`) 기반으로 관리됩니다.
-- 클라이언트는 마지막 적용 시퀀스를 기준으로 중복을 제거합니다.
-- WebSocket 재연결 시 누락 이벤트를 재동기화할 수 있도록 설계되어 있습니다.
-- 이벤트 수신 경로는 WebSocket + HTTP 이벤트 조회/스트림을 함께 고려한 구조입니다.
-
-## 이동/스킬/에너지 규칙 (요약)
-
-`BasicRuleSet` 기준으로 다음이 적용됩니다.
-
-- 이동(MOVE)
-  - 맵 경계, 통과 가능 타일, 생존 여부 검증
-  - 같은 윈도우에서 큐에 쌓인 이전 이동을 반영한 "예상 위치" 기준 검증
-  - 한 번의 이동 가능 거리(`moveRange`)와 윈도우 에너지 제한을 함께 적용
-- 스킬(USE_SKILL)
-  - 스킬 템플릿/사거리/조준 좌표/성공 판정 기반 처리
-  - 성공/실패에 따른 에너지 비용 및 피해 반영
-- 공격/방어/턴종료
-  - 인접 판정, 방어 상태, 에너지 소모, 턴 종료 정산 규칙 반영
-
-## 기권/종료/연결 끊김 처리
-
-### 기권 (`SURRENDER`)
-
-- 클라이언트가 `SURRENDER` 액션을 전송하면 서버가 `GAME_ENDED` 이벤트를 생성합니다.
-- 종료 payload에는 `winnerId`, `reason`, `surrenderedPlayerId`가 포함됩니다.
-- 서버는 매치 참가자에게 종료 이벤트를 전송하고 매치를 정리합니다.
-
-### 재접속 유예
-
-- 플레이어 연결이 끊기면 상대에게 `PLAYER_DISCONNECTED` 이벤트를 전달하고,
-  재접속 유예 시간(`reconnectDeadlineEpochMs`)을 부여합니다.
-- 유예 내 복귀 시 `PLAYER_RECONNECTED`/`MATCH_RESUMED` 흐름으로 진행합니다.
-- 유예 내 미복귀 시 상대 승 처리(`PLAYER_ABANDONED`)로 종료됩니다.
-
-### 로비 복귀/이어하기
-
-- 클라이언트는 재개 가능한 매치(`canResume`, `resumableMatchId`)를 감지하고
-  로비에서 `Resume Game` 흐름을 제공할 수 있습니다.
-
-## UI 동작 원칙 (온라인 전투)
-
-- 온라인 상태는 서버 `STATE_UPDATED`를 기준으로 동기화합니다.
-- 정산 연출은 `resolutionSteps`가 새 윈도우로 갱신되었을 때 재생됩니다.
-- 재접속 대기 중에는 "Waiting..." 다이얼로그와 남은 시간 표시가 노출됩니다.
-
-## Cloudflare 및 운영 메모
-
-- 기본 서버 호스트는 `game.yeunsuh.online` 기준으로 구성되어 있습니다.
-- 클라이언트 기본 포트는 환경/시스템 속성으로 주입 가능합니다.
-- Cloudflare 프록시/포트 정책에 따라 직접 포트 접근이 제한될 수 있으므로,
-  DNS/SSL/방화벽 구성을 실제 운영 환경에 맞게 설정해야 합니다.
-
-## 배포
-
-배포는 fat JAR + 실행 스크립트 번들을 권장합니다.
-
-예시:
+JAR 하나만 보내는 방식은 외부 의존성 때문에 권장하지 않습니다. fat JAR + 실행 스크립트를 ZIP으로 묶어 전달하세요.
 
 ```text
 MageFight-Release/
 ├── magefight-client-1.0.0-all.jar
-├── run-magefight.bat
-├── run-magefight.sh
-├── QUICKSTART.txt
-└── README.txt (optional)
+├── run-magefight.bat        (Windows)
+├── run-magefight.sh         (macOS/Linux)
+└── QUICKSTART.txt
 ```
+
+```bash
+# 1) fat JAR 빌드
+cd MageFight
+mvn clean package          # → magefight-client/target/magefight-client-1.0.0-all.jar
+
+# 2) 배포 폴더 구성 후 ZIP (PowerShell)
+Compress-Archive -Path MageFight-Release -DestinationPath MageFight-v1.0.0.zip
+```
+
+사용자는 ZIP을 풀고 Java 17+ 설치 확인 후 스크립트만 실행하면 됩니다. 서버 주소는 기본값으로 `game.yeunsuh.online:9090`에 연결됩니다.
+
+---
 
 ## 프로젝트 메모
 
-- `magefight-content`는 게임 데이터/성장 규칙의 소유자입니다.
-- `magefight-client`는 런처/로비/전투 UI와 온라인 동기화 표현 계층입니다.
-- 엔진은 재사용 가능하도록 유지하고, MageFight는 게임 전용 클라이언트로 확장합니다.
+- `turngame-engine`(GameEngine): 도메인 모델 + 규칙 엔진 + HTTP/WebSocket 릴레이 서버. 어디에도 의존하지 않는 재사용 코어.
+- `magefight-content`: 아키타입·스킬트리·성장·해금의 데이터 모델.
+- `magefight-client`: 런처·로비·스킬트리·전투 화면 + 네트워크 클라이언트.
+- 모듈 분리는 의도된 설계입니다. 엔진은 재사용 가능하게 두고, MageFight는 게임 전용 클라이언트로 독립적으로 확장합니다.
 
 ---
 
 # English Notes
 
-MageFight is a battle-oriented game client built on top of the reusable turn-based engine.
-The main design goal is clear separation between engine logic and game-specific content/UI.
+MageFight is the **content + presentation layer** on top of a reusable turn-based battle engine (`turngame-engine`, in the `GameEngine` project). It is split into two Maven modules:
 
-## Module Structure
+- `magefight-content`: archetypes, skill trees, progression/unlock rules, preset factories (game-specific **data model**).
+- `magefight-client`: the Swing launcher & battle UI plus the network client.
 
-- `GameEngine`
-  - turn windows, action validation, synchronization, matchmaking, reconnect handling, replay recording
-- `MageFight`
-  - `magefight-content`: archetypes, skill trees, progression and unlock rules
-  - `magefight-client`: Swing launcher, lobby, battle UI
+The split keeps game-specific rules separate from the reusable engine. The engine owns the domain, rules, and relay server; MageFight owns content and screens.
 
-## Current Online Architecture
+### Project layout
 
-The implementation is no longer a simple direct TCP client model.
-It is an HTTP relay-centered architecture with event channels.
+Three artifacts under one workspace root:
+`turngame-engine` (GameEngine) ← `magefight-content` ← `magefight-client`. The engine depends on nothing; content uses only engine domain types; the client uses both. See the Korean "워크스페이스 구조" tree above for package-level detail, and [DESIGN-NOTE.md](DESIGN-NOTE.md) for the rationale.
 
-Server endpoints include:
+### Core design
 
-- `/api/join`
-- `/api/action`
-- `/api/events`
-- `/api/events/stream`
-- `/api/disconnect`
-- `/api/resume`
-- `/health`
+- **Turn windows + simultaneous resolution**: during a window each player *queues* multiple actions (move/attack/skill/defend) — the board does **not** change yet. When both send `END_TURN`, the server resolves the queued actions **step by step, simultaneously**, recording each `ResolutionStep` (before/after HP & positions). The client replays these as an animation. Energy resets and the next window begins.
+- **Resources/movement**: each action costs energy; a per-window energy cap (per archetype) limits how many actions you take. `moveRange` (default 1) limits a *single* move's distance, while energy limits the *number* of moves. Attacks need orthogonal adjacency; skills are range- and probability-checked.
+- **Skills**: `SkillTemplate` carries damage/cooldown/success/cost/cast-time/area plus cross-skill `dependencies` (buffs) and `counters` (negation/reduction). Cooldowns tick per window; mastery affects success and cast time.
+- **Progression** (magefight-content): `MageProgress` tracks wins, archetype, skill mastery, and inspiration; you learn skill-tree nodes and promote archetypes. On matchmaking the client sends the full computed spec (skills + appearance) to the server.
 
-WebSocket is used for real-time event delivery (server port + 1), while actions are sent through HTTP for deterministic request/response handling.
+### Network architecture
 
-## Match Flow
+The earlier "TCP Socket / ClientHandler" description is **obsolete**. The real design is an **HTTP relay server with a per-player event queue**:
 
-1. Client requests matchmaking (`Find Game`)
-2. Match signals arrive (`MATCHED`)
-3. Battle state sync begins (`MATCH_STARTED`, `STATE_UPDATED`)
-4. Players submit actions via `/api/action`
-5. Server resolves queued actions per window and sends updated state
+- Server: `HttpRelayServer` (default port 9090) exposes REST endpoints `/api/join`, `/api/action`, `/api/disconnect`, plus event delivery via `/api/events` (long-poll) and `/api/events/stream` (SSE), plus a WebSocket endpoint `GameWebSocketEndpoint` at `/events` on port+1 (9091), and `/health`.
+- The server pushes per-player events (monotonic `seq`) to whichever transport is connected.
+- Client receive-transport fallback (`GameNetworkClient.connectionMode`): `0 = WebSocket`, `1 = SSE`, `2 = long-poll`, so an idle player never misses opponent/resolution/end-of-game events. Actions are always sent via HTTP `POST /api/action` for deterministic acks.
 
-## Sync and Event Ordering
+**Message types** — Client→Server: `JOIN`/`FIND_GAME`, `ACTION` (`ATTACK|DEFEND|USE_SKILL|MOVE|END_TURN`, or `SURRENDER`), `RESUME`, `DISCONNECT`, `PING`. Server→Client: `JOINED`, `MATCHED`, `MATCH_STARTED`, `STATE_UPDATED`, `GAME_ENDED` (`HP_ZERO|PLAYER_SURRENDERED|PLAYER_ABANDONED`), `PLAYER_DISCONNECTED`/`PLAYER_RECONNECTED`/`MATCH_RESUMED`, `ERROR`. Full schema in [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md).
 
-- Events are sequence-based (`_eventSeq`).
-- Client deduplicates by last applied sequence.
-- Reconnect paths include missed-event synchronization.
+### Build & run
 
-## Surrender / Disconnect / Resume
+- Java 17. Open the root `pom.xml` so both projects load. Build `GameEngine` first, then `mvn package` in `MageFight` (produces `magefight-client-1.0.0-all.jar` via the shade plugin).
+- Client entry: `com.magefight.MageFightApp`. Server entry: `com.turngame.server.HttpRelayServerMain <httpPort> <turnTimeoutSec>` (HTTP on the given port, WebSocket on port+1).
+- Local vs bot: run the app and click "Start Battle (Local)". Online: run the server, then in the client click "Find Online Match" → "Find Game".
 
-- `SURRENDER` produces `GAME_ENDED` with `winnerId`, `reason`, `surrenderedPlayerId`.
-- On disconnect, server broadcasts `PLAYER_DISCONNECTED` with reconnect deadline.
-- If reconnection succeeds in time, match resumes (`PLAYER_RECONNECTED` / `MATCH_RESUMED`).
-- If not, the match ends with abandonment reason.
+### Distribution
 
-## Build and Run
+Ship a fat JAR + launch scripts in a ZIP (a bare JAR won't run due to dependencies):
 
-```bash
-cd GameEngine
-mvn clean package
-
-cd ../MageFight
-mvn clean package
+```text
+MageFight-Release/
+├── magefight-client-1.0.0-all.jar
+├── run-magefight.bat / run-magefight.sh
+└── QUICKSTART.txt
 ```
 
-Client entry point: `com.magefight.MageFightApp`.
-
-## Distribution
-
-Recommended delivery is a release bundle containing a fat JAR plus launch scripts.
+The default server address is `game.yeunsuh.online:9090`.
 
 ## AI Usage Notes
 
-- The project structure and gameplay flow were planned first.
-- AI-assisted code was reviewed and adjusted to match desired behavior and architecture.
+- I planned the overall flow and game elements, then reviewed and adjusted AI-assisted code.
+- The concrete MageFight implementation was produced with AI support; I handled structure and behavior review.
+- This README focuses on project intent, structure, and module responsibilities.
