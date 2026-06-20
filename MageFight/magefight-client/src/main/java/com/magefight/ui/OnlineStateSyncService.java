@@ -36,7 +36,9 @@ final class OnlineStateSyncService {
             String opponentCharacterDisplayName,
             int resolvedWindowIndex,
             List<GameSession.ResolutionStep> resolutionSteps,
-            String turnPlayerId
+            String turnPlayerId,
+            String opponentSkinColorHex,
+            String opponentOutfitColorHex
     ) {}
 
     @SuppressWarnings("unchecked")
@@ -74,6 +76,9 @@ final class OnlineStateSyncService {
         }
 
         if (me == null || opponent == null || opponentId == null || opponentId.isBlank()) {
+            System.out.println("[OnlineStateSync] sync skipped: me=" + (me != null)
+                    + ", opponent=" + (opponent != null) + ", myPlayerId=" + myPlayerId
+                    + ", playersInPayload=" + players.size());
             return null;
         }
 
@@ -100,6 +105,8 @@ final class OnlineStateSyncService {
         int resolvedWindowIndex = asInt(payload.get("resolvedWindowIndex"), -1);
         List<GameSession.ResolutionStep> steps = parseResolutionSteps(payload, myPlayerId, opponentId);
         String turnPlayerId = String.valueOf(payload.get("turnPlayerId"));
+        String opponentSkinColorHex = asHexColor(opponent.get("skinColorHex"));
+        String opponentOutfitColorHex = asHexColor(opponent.get("outfitColorHex"));
 
         return new SyncSnapshot(
                 snapshot,
@@ -110,7 +117,9 @@ final class OnlineStateSyncService {
                 opponentCharacterDisplayName,
                 resolvedWindowIndex,
                 steps,
-                turnPlayerId
+                turnPlayerId,
+                opponentSkinColorHex,
+                opponentOutfitColorHex
         );
     }
 
@@ -376,6 +385,12 @@ final class OnlineStateSyncService {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    private String asHexColor(Object obj) {
+        if (obj == null) return null;
+        String hex = String.valueOf(obj).trim();
+        return hex.matches("^#[0-9a-fA-F]{6}$") ? hex : null;
     }
 
     private double asDouble(Object obj, double defaultValue) {

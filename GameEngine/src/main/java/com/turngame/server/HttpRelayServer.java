@@ -1,12 +1,44 @@
 package com.turngame.server;
 
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+import org.glassfish.tyrus.server.Server;
+
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.turngame.domain.PlayerState;
 import com.turngame.domain.character.GameCharacter;
 import com.turngame.domain.enums.ActionType;
 import com.turngame.domain.map.BattleMap;
+import com.turngame.domain.map.MapCellPosition;
+import com.turngame.domain.skill.SkillCounter;
+import com.turngame.domain.skill.SkillDependency;
 import com.turngame.domain.skill.SkillEffect;
 import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.engine.GameSession;
@@ -30,38 +62,13 @@ import com.turngame.server.account.AccountStore;
 import com.turngame.server.protocol.RequestMessage;
 import com.turngame.server.protocol.ResponseMessage;
 
-import jakarta.websocket.Session;
-import java.io.BufferedReader;
-import java.io.BufferedWriter;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Queue;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
-import org.glassfish.tyrus.server.Server;
 import jakarta.websocket.DeploymentException;
+import jakarta.websocket.Session;
 
 public class HttpRelayServer {
     private static final Gson GSON = new Gson();
     private static final long EVENT_WAIT_TIMEOUT_MS = 25_000L;
+    private static final long RECONNECT_GRACE_MS = 60_000L;
 
     private final int port;
     private final int turnTimeoutSeconds;
@@ -73,6 +80,9 @@ public class HttpRelayServer {
     private final Map<String, RelayMatch> matches = new ConcurrentHashMap<>();
     private final Map<String, String> playerToMatch = new ConcurrentHashMap<>();
     private final Map<String, Session> wsSessions = new ConcurrentHashMap<>();
+    // 상대가 오프라인인 상태로 매치가 종료(기권/미복귀)되면, 그 플레이어가 다시
+    // 접속할 때 결과를 알려주기 위해 accountId 기준으로 종료 결과를 보관한다.
+    private final Map<String, Map<String, Object>> pendingResultByAccount = new ConcurrentHashMap<>();
     private volatile boolean running;
     private volatile int playerSeq = 1;
     private volatile HttpServer httpServer;
@@ -91,6 +101,7 @@ public class HttpRelayServer {
         httpServer.createContext("/api/events", new EventsHandler());
         httpServer.createContext("/api/events/stream", new EventStreamHandler());
         httpServer.createContext("/api/disconnect", new DisconnectHandler());
+        httpServer.createContext("/api/resume", new ResumeHandler());
         httpServer.createContext("/health", exchange -> writeJson(exchange, 200, Map.of("ok", true)));
         httpServer.setExecutor(executor);
         httpServer.start();
@@ -203,8 +214,17 @@ public class HttpRelayServer {
         if (match == null) {
             return;
         }
+        if (hasDisconnectedParticipant(match)) {
+            return;
+        }
 
         try {
+            if (action instanceof MoveAction move) {
+                String moveRejection = diagnoseMoveRejection(match.game, move);
+                if (moveRejection != null) {
+                    throw new IllegalArgumentException("Invalid move: " + moveRejection);
+                }
+            }
             match.game.submitAction(action);
             if (match.game.consumeWindowAdvancedFlag()) {
                 match.game.getAllPlayerIds().forEach(pid -> tickCooldowns(matchId, pid));
@@ -220,6 +240,64 @@ public class HttpRelayServer {
         } catch (RuntimeException ex) {
             System.err.println("WebSocket action error: " + ex.getMessage());
         }
+    }
+
+    public void submitSurrender(String matchId, String playerId, String requestId) {
+        String actualMatchId = playerToMatch.get(playerId);
+        if (matchId == null || !matchId.equals(actualMatchId)) {
+            return;
+        }
+
+        RelayMatch match = matches.get(matchId);
+        if (match == null) {
+            return;
+        }
+
+        List<String> participants = new ArrayList<>(match.game.getAllPlayerIds());
+        String winnerId = null;
+        for (String pid : participants) {
+            if (!playerId.equals(pid)) {
+                winnerId = pid;
+                break;
+            }
+        }
+
+        Map<String, Object> endedPayload = new HashMap<>();
+        endedPayload.put("matchId", matchId);
+        endedPayload.put("winnerId", winnerId);
+        endedPayload.put("reason", "PLAYER_SURRENDERED");
+        endedPayload.put("surrenderedPlayerId", playerId);
+        ResponseMessage ended = new ResponseMessage("GAME_ENDED", requestId, endedPayload);
+        // 양쪽 참가자 모두에게 먼저 GAME_ENDED를 전송한다.
+        // 여기서 WebSocket 세션을 즉시 닫으면 방금 보낸 GAME_ENDED 프레임이
+        // 상대에게 전달되기 전에 연결이 끊겨 상대측 기권 처리가 누락될 수 있다.
+        // 연결 종료는 클라이언트가 GAME_ENDED 수신 후 스스로 disconnect 하도록 맡긴다.
+        System.out.println("[submitSurrender] matchId=" + matchId + ", surrendered=" + playerId
+                + ", winner=" + winnerId + ", participants=" + participants);
+        for (String participantId : participants) {
+            RelayPlayer participant = players.get(participantId);
+            Session ws = wsSessions.get(participantId);
+            System.out.println("[submitSurrender] publishing GAME_ENDED to " + participantId
+                    + " connected=" + (participant != null && participant.connected)
+                    + " wsOpen=" + (ws != null && ws.isOpen()));
+            publish(participantId, ended);
+            // 오프라인 상태인 참가자는 GAME_ENDED를 즉시 받지 못하므로
+            // 재접속 시 알려주기 위해 결과를 보관한다.
+            if (participant != null && !participant.connected) {
+                storePendingResult(participant.accountId, "PLAYER_SURRENDERED", participantId.equals(winnerId));
+            }
+        }
+        clearMatch(matchId);
+    }
+
+    private void storePendingResult(String accountId, String reason, boolean won) {
+        if (accountId == null || accountId.isBlank()) {
+            return;
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("reason", reason);
+        result.put("won", won);
+        pendingResultByAccount.put(accountId.trim().toLowerCase(Locale.ROOT), result);
     }
 
     /**
@@ -239,6 +317,10 @@ public class HttpRelayServer {
             return;
         }
 
+        if (!player.connected) {
+            return;
+        }
+
         player.connected = false;
         waitingPlayers.removeIf(id -> id.equals(playerId));
         unregisterWebSocketSession(playerId);
@@ -253,25 +335,16 @@ public class HttpRelayServer {
             return;
         }
 
+        long reconnectDeadlineEpochMs = System.currentTimeMillis() + RECONNECT_GRACE_MS;
+        match.reconnectDeadlineByPlayer.put(playerId, reconnectDeadlineEpochMs);
+
         Map<String, Object> disconnectedPayload = new HashMap<>();
         disconnectedPayload.put("matchId", matchId);
         disconnectedPayload.put("playerId", playerId);
+        disconnectedPayload.put("reconnectDeadlineEpochMs", reconnectDeadlineEpochMs);
         publishToMatch(matchId, new ResponseMessage("PLAYER_DISCONNECTED", requestId, disconnectedPayload));
 
-        String winnerId = null;
-        for (String pid : match.game.getAllPlayerIds()) {
-            if (!playerId.equals(pid)) {
-                winnerId = pid;
-                break;
-            }
-        }
-        Map<String, Object> endedPayload = new HashMap<>();
-        endedPayload.put("matchId", matchId);
-        endedPayload.put("winnerId", winnerId);
-        endedPayload.put("reason", "PLAYER_DISCONNECTED");
-        publishToMatch(matchId, new ResponseMessage("GAME_ENDED", requestId, endedPayload));
-
-        clearMatch(matchId);
+        scheduleReconnectTimeout(match, playerId, reconnectDeadlineEpochMs, requestId);
     }
 
     private final class JoinHandler implements HttpHandler {
@@ -291,16 +364,49 @@ public class HttpRelayServer {
                 String characterDisplayName = asString(payload.get("characterDisplayName"), nickname);
                 int turnEnergyCap = asInt(payload.get("turnEnergyCap"), Integer.MAX_VALUE);
                 List<SkillTemplate> customSkills = parseCustomSkills(payload.get("skills"));
+                String skinColorHex = asString(payload.get("skinColorHex"), "#F5E0C8");
+                String outfitColorHex = asString(payload.get("outfitColorHex"), "#80A8DC");
 
                 if (!accountId.isBlank()) {
                     accountId = accountId.trim().toLowerCase(Locale.ROOT);
                     nickname = accountStore.nickname(accountId).orElse(nickname);
-                    characterDisplayName = accountStore.characterProfile(accountId)
-                            .map(AccountStore.CharacterProfile::displayName)
-                            .orElse(characterDisplayName);
+                    AccountStore.CharacterProfile profile = accountStore.characterProfile(accountId).orElse(null);
+                    if (profile != null) {
+                        characterDisplayName = profile.displayName();
+                        // 계정에 저장된 외형이 있으면 우선 사용한다(클라이언트가 안 보냈을 때 대비).
+                        if (asString(payload.get("skinColorHex"), "").isBlank() && profile.skinColorHex() != null) {
+                            skinColorHex = profile.skinColorHex();
+                        }
+                        if (asString(payload.get("outfitColorHex"), "").isBlank() && profile.outfitColorHex() != null) {
+                            outfitColorHex = profile.outfitColorHex();
+                        }
+                    }
                 }
                 if (characterDisplayName == null || characterDisplayName.isBlank()) {
                     characterDisplayName = nickname;
+                }
+
+                RelayPlayer resumable = findResumablePlayer(accountId);
+                if (resumable != null) {
+                    RelayMatch resumableMatch = matches.get(resumable.matchId);
+                    Map<String, Object> responsePayload = new HashMap<>();
+                    responsePayload.put("playerId", resumable.playerId);
+                    responsePayload.put("nickname", resumable.nickname);
+                    responsePayload.put("characterDisplayName", resumable.characterDisplayName);
+                    responsePayload.put("accountId", resumable.accountId == null || resumable.accountId.isBlank() ? null : resumable.accountId);
+                    responsePayload.put("characterType", resumable.characterType);
+                    responsePayload.put("skinColorHex", resumable.skinColorHex);
+                    responsePayload.put("outfitColorHex", resumable.outfitColorHex);
+                    responsePayload.put("resumableMatchId", resumable.matchId);
+                    responsePayload.put("canResume", true);
+                    if (resumableMatch != null) {
+                        Long deadline = resumableMatch.reconnectDeadlineByPlayer.get(resumable.playerId);
+                        if (deadline != null) {
+                            responsePayload.put("reconnectDeadlineEpochMs", deadline);
+                        }
+                    }
+                    writeJson(exchange, 200, new ResponseMessage("JOINED", req.requestId(), responsePayload));
+                    return;
                 }
 
                 String playerId = "p-" + (playerSeq++);
@@ -311,7 +417,9 @@ public class HttpRelayServer {
                     accountId,
                     characterType.toUpperCase(Locale.ROOT),
                     customSkills,
-                    turnEnergyCap
+                    turnEnergyCap,
+                    skinColorHex,
+                    outfitColorHex
                 );
                 players.put(playerId, player);
                 
@@ -326,6 +434,13 @@ public class HttpRelayServer {
                 responsePayload.put("characterDisplayName", characterDisplayName);
                 responsePayload.put("accountId", accountId.isBlank() ? null : accountId);
                 responsePayload.put("characterType", characterType.toUpperCase(Locale.ROOT));
+                // 이전 매치가 오프라인 상태로 종료(기권/미복귀)됐다면 결과를 전달한다.
+                if (!accountId.isBlank()) {
+                    Map<String, Object> pendingResult = pendingResultByAccount.remove(accountId);
+                    if (pendingResult != null) {
+                        responsePayload.put("lastGameResult", pendingResult);
+                    }
+                }
                 tryCreateMatch();
                 writeJson(exchange, 200, new ResponseMessage("JOINED", req.requestId(), responsePayload));
             } catch (RuntimeException ex) {
@@ -369,7 +484,25 @@ public class HttpRelayServer {
                 }
 
                 try {
+                    String actionType = asString(req.payload().get("actionType"), "").toUpperCase(Locale.ROOT);
+                    if ("SURRENDER".equals(actionType)) {
+                        submitSurrender(matchId, playerId, req.requestId());
+                        writeJson(exchange, 200, Map.of("ok", true));
+                        return;
+                    }
+
+                    if (hasDisconnectedParticipant(match)) {
+                        writeJson(exchange, 409, error(req.requestId(), "MATCH_PAUSED", "Match is paused while opponent reconnects."));
+                        return;
+                    }
+
                     GameAction action = parseAction(match, playerId, req.payload());
+                    if (action instanceof MoveAction move) {
+                        String moveRejection = diagnoseMoveRejection(match.game, move);
+                        if (moveRejection != null) {
+                            throw new IllegalArgumentException("Invalid move: " + moveRejection);
+                        }
+                    }
                     match.game.submitAction(action);
                     if (match.game.consumeWindowAdvancedFlag()) {
                         match.game.getAllPlayerIds().forEach(pid -> tickCooldowns(matchId, pid));
@@ -503,6 +636,63 @@ public class HttpRelayServer {
                 writeJson(exchange, 200, Map.of("ok", true));
             } catch (RuntimeException ex) {
                 writeJson(exchange, 400, error(readRequest(exchange).requestId(), "DISCONNECT_FAILED", ex.getMessage()));
+            }
+        }
+    }
+
+    private final class ResumeHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            try {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    writeJson(exchange, 405, Map.of("error", "Method not allowed"));
+                    return;
+                }
+
+                RequestMessage req = readRequest(exchange);
+                Map<String, Object> payload = req.payload() == null ? Map.of() : req.payload();
+                String playerId = asString(payload.get("playerId"), "");
+                String requestedMatchId = asString(payload.get("matchId"), "");
+                if (playerId.isBlank() || requestedMatchId.isBlank()) {
+                    writeJson(exchange, 400, error(req.requestId(), "INVALID_RESUME", "playerId and matchId required"));
+                    return;
+                }
+
+                RelayPlayer player = players.get(playerId);
+                if (player == null) {
+                    writeJson(exchange, 404, error(req.requestId(), "UNKNOWN_PLAYER", "player not found"));
+                    return;
+                }
+
+                RelayMatch match = matches.get(requestedMatchId);
+                if (match == null) {
+                    writeJson(exchange, 404, error(req.requestId(), "MATCH_NOT_FOUND", "Match not found"));
+                    return;
+                }
+
+                if (!requestedMatchId.equals(player.matchId)) {
+                    writeJson(exchange, 400, error(req.requestId(), "MATCH_MISMATCH", "matchId does not match your current game."));
+                    return;
+                }
+
+                player.connected = true;
+                match.reconnectDeadlineByPlayer.remove(playerId);
+                ScheduledFuture<?> reconnectFuture = match.reconnectTimeoutByPlayer.remove(playerId);
+                if (reconnectFuture != null) {
+                    reconnectFuture.cancel(true);
+                }
+
+                Map<String, Object> resumedPayload = new HashMap<>();
+                resumedPayload.put("matchId", requestedMatchId);
+                resumedPayload.put("playerId", playerId);
+                publishToMatch(requestedMatchId, new ResponseMessage("PLAYER_RECONNECTED", req.requestId(), resumedPayload));
+                publishToMatch(requestedMatchId, new ResponseMessage("MATCH_RESUMED", req.requestId(), resumedPayload));
+                publishState(match, req.requestId());
+                scheduleTurnTimeout(requestedMatchId);
+
+                writeJson(exchange, 200, Map.of("ok", true));
+            } catch (RuntimeException ex) {
+                writeJson(exchange, 400, error(readRequest(exchange).requestId(), "RESUME_FAILED", ex.getMessage()));
             }
         }
     }
@@ -690,6 +880,9 @@ public class HttpRelayServer {
             if (current == null || current.game.isFinished()) {
                 return;
             }
+            if (hasDisconnectedParticipant(current)) {
+                return;
+            }
             try {
                 // Force-complete this window on timeout by ending turn for every unready player.
                 boolean anyTimedOut = false;
@@ -718,6 +911,16 @@ public class HttpRelayServer {
         RelayMatch match = matches.remove(matchId);
         if (match != null && match.timeoutFuture != null) {
             match.timeoutFuture.cancel(true);
+        }
+        if (match != null && match.replayRecorder != null) {
+            match.replayRecorder.close();
+        }
+        if (match != null) {
+            for (ScheduledFuture<?> reconnectFuture : match.reconnectTimeoutByPlayer.values()) {
+                reconnectFuture.cancel(true);
+            }
+            match.reconnectTimeoutByPlayer.clear();
+            match.reconnectDeadlineByPlayer.clear();
         }
         for (RelayPlayer player : players.values()) {
             if (matchId.equals(player.matchId)) {
@@ -781,6 +984,77 @@ public class HttpRelayServer {
         return new EndTurnAction(actorId);
     }
 
+    private String diagnoseMoveRejection(GameSession game, MoveAction move) {
+        final int moveEnergyCost = 1;
+        PlayerState actor = game.getPlayerState(move.actorId());
+        if (actor == null) {
+            return "actor not found";
+        }
+        if (!actor.isAlive()) {
+            return "actor is not alive";
+        }
+        if (game.isPlayerReady(move.actorId())) {
+            return "player already ready this window";
+        }
+        if (game.isMoveLockedThisWindow(move.actorId())) {
+            return "movement is locked this window (slow tile effect)";
+        }
+        if (game.hasPendingSlowLanding(move.actorId())) {
+            return "pending move already lands on slow tile";
+        }
+        if (!actor.hasEnergy(moveEnergyCost)) {
+            return "not enough energy";
+        }
+        if (!actor.canSpendEnergyThisWindow(moveEnergyCost)) {
+            return "window energy cap exceeded";
+        }
+
+        Optional<MapCellPosition> origin = game.getProjectedPlayerPosition(move.actorId());
+        if (origin.isEmpty()) {
+            origin = game.getPlayerPosition(move.actorId());
+        }
+        if (origin.isEmpty()) {
+            return "actor position missing";
+        }
+
+        int targetCol = move.targetCol();
+        int targetRow = move.targetRow();
+        MapCellPosition from = origin.get();
+        if (!game.isInsideMap(targetCol, targetRow)) {
+            return "target out of map bounds: (" + targetCol + "," + targetRow + ")"
+                    + " from (" + from.col() + "," + from.row() + ")";
+        }
+        if (!game.isPassableCell(targetCol, targetRow)) {
+            return "target tile not passable: '" + game.getTileAt(targetCol, targetRow) + "' at (" + targetCol + "," + targetRow + ")";
+        }
+
+        // from은 이미 큐에 쌓인 이동들을 적용한 뒤의 위치(projected)다.
+        // 이동 횟수는 윈도우 에너지로 제한되므로, 여기서는 이번 한 번의 이동 거리만
+        // moveRange와 비교한다.
+        int requestedDistance = movementDistance(from.col(), from.row(), targetCol, targetRow, actor.diagonalMoveAllowed());
+        if (requestedDistance <= 0) {
+            return "target is same as projected position: (" + targetCol + "," + targetRow + ")";
+        }
+        if (requestedDistance > actor.moveRange()) {
+            return "single move exceeds range: requested=" + requestedDistance
+                    + ", max=" + actor.moveRange()
+                    + " from projected (" + from.col() + "," + from.row() + ")"
+                    + " to (" + targetCol + "," + targetRow + ")"
+                    + " diagonalAllowed=" + actor.diagonalMoveAllowed();
+        }
+
+        return null;
+    }
+
+    private int movementDistance(int fromCol, int fromRow, int toCol, int toRow, boolean diagonalAllowed) {
+        int deltaCol = Math.abs(fromCol - toCol);
+        int deltaRow = Math.abs(fromRow - toRow);
+        if (diagonalAllowed) {
+            return Math.max(deltaCol, deltaRow);
+        }
+        return deltaCol + deltaRow;
+    }
+
     private SkillTemplate findOwnedSkill(RelayMatch match, String playerId, String skillName) {
         for (SkillTemplate skill : match.playerSkills.getOrDefault(playerId, List.of())) {
             if (skill.name().equalsIgnoreCase(skillName)) {
@@ -811,6 +1085,8 @@ public class HttpRelayServer {
             if (relayPlayer != null) {
                 p.put("nickname", relayPlayer.nickname);
                 p.put("characterDisplayName", relayPlayer.characterDisplayName);
+                p.put("skinColorHex", relayPlayer.skinColorHex);
+                p.put("outfitColorHex", relayPlayer.outfitColorHex);
             }
             p.put("hp", state.hp());
             p.put("maxHp", state.maxHp());
@@ -849,6 +1125,84 @@ public class HttpRelayServer {
         publishToMatch(match.matchId, new ResponseMessage("GAME_ENDED", requestId, payload));
     }
 
+    private boolean hasDisconnectedParticipant(RelayMatch match) {
+        if (match == null) {
+            return false;
+        }
+        for (String playerId : match.game.getAllPlayerIds()) {
+            RelayPlayer player = players.get(playerId);
+            if (player != null && !player.connected) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private RelayPlayer findResumablePlayer(String accountId) {
+        if (accountId == null || accountId.isBlank()) {
+            return null;
+        }
+        for (RelayPlayer player : players.values()) {
+            if (player.connected) {
+                continue;
+            }
+            if (!accountId.equalsIgnoreCase(player.accountId)) {
+                continue;
+            }
+            if (player.matchId == null || player.matchId.isBlank()) {
+                continue;
+            }
+            if (!matches.containsKey(player.matchId)) {
+                continue;
+            }
+            return player;
+        }
+        return null;
+    }
+
+    private void scheduleReconnectTimeout(RelayMatch match, String disconnectedPlayerId, long deadlineEpochMs, String requestId) {
+        if (match == null) {
+            return;
+        }
+
+        ScheduledFuture<?> prior = match.reconnectTimeoutByPlayer.remove(disconnectedPlayerId);
+        if (prior != null) {
+            prior.cancel(true);
+        }
+
+        long delayMs = Math.max(0L, deadlineEpochMs - System.currentTimeMillis());
+        ScheduledFuture<?> future = scheduler.schedule(() -> {
+            RelayMatch current = matches.get(match.matchId);
+            if (current == null) {
+                return;
+            }
+            RelayPlayer disconnected = players.get(disconnectedPlayerId);
+            if (disconnected == null || disconnected.connected) {
+                return;
+            }
+
+            String winnerId = null;
+            for (String pid : current.game.getAllPlayerIds()) {
+                if (!disconnectedPlayerId.equals(pid)) {
+                    winnerId = pid;
+                    break;
+                }
+            }
+
+            Map<String, Object> endedPayload = new HashMap<>();
+            endedPayload.put("matchId", current.matchId);
+            endedPayload.put("winnerId", winnerId);
+            endedPayload.put("reason", "PLAYER_ABANDONED");
+            endedPayload.put("disconnectedPlayerId", disconnectedPlayerId);
+            publishToMatch(current.matchId, new ResponseMessage("GAME_ENDED", requestId, endedPayload));
+            // 미복귀로 패배한 플레이어는 오프라인이므로 재접속 시 결과를 알려준다.
+            storePendingResult(disconnected.accountId, "PLAYER_ABANDONED", false);
+            clearMatch(current.matchId);
+        }, delayMs, TimeUnit.MILLISECONDS);
+
+        match.reconnectTimeoutByPlayer.put(disconnectedPlayerId, future);
+    }
+
     private void publishToMatch(String matchId, ResponseMessage message) {
         for (Map.Entry<String, String> entry : playerToMatch.entrySet()) {
             if (!Objects.equals(entry.getValue(), matchId)) {
@@ -878,6 +1232,11 @@ public class HttpRelayServer {
                 wsSession.getBasicRemote().sendText(GSON.toJson(envelope));
             } catch (Exception ex) {
                 System.err.println("WebSocket send error for " + playerId + ": " + ex.getMessage());
+                try {
+                    wsSession.close();
+                } catch (Exception closeEx) {
+                    System.err.println("WebSocket close error for " + playerId + ": " + closeEx.getMessage());
+                }
                 unregisterWebSocketSession(playerId);
             }
         }
@@ -942,13 +1301,6 @@ public class HttpRelayServer {
 
     private String cooldownKey(String matchId, String playerId, String skillName) {
         return matchId + "::" + playerId + "::" + skillName;
-    }
-
-    private void clearTimeout(String matchId) {
-        RelayMatch match = matches.get(matchId);
-        if (match != null && match.timeoutFuture != null) {
-            match.timeoutFuture.cancel(true);
-        }
     }
 
     private static String asString(Object value, String defaultValue) {
@@ -1068,11 +1420,67 @@ public class HttpRelayServer {
                 successEnergyCost,
                 prepareCastMs,
                 effect,
-                List.of(),
-                List.of(),
+                parseSkillDependencies(skillData.get("dependencies")),
+                parseSkillCounters(skillData.get("counters")),
                 isDefenseSkill,
                 evadeDurationMs
         );
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<SkillDependency> parseSkillDependencies(Object depsObj) {
+        if (!(depsObj instanceof List<?> rawDeps)) {
+            return List.of();
+        }
+        List<SkillDependency> parsed = new ArrayList<>();
+        for (Object depObj : rawDeps) {
+            if (!(depObj instanceof Map<?, ?> rawMap)) {
+                continue;
+            }
+            Map<String, Object> depData = (Map<String, Object>) rawMap;
+            String affected = asString(depData.get("affectedSkillName"), "").trim();
+            if (affected.isBlank()) {
+                continue;
+            }
+            SkillDependency.DependencyType type;
+            try {
+                type = SkillDependency.DependencyType.valueOf(
+                        asString(depData.get("type"), "").trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ex) {
+                continue;
+            }
+            parsed.add(new SkillDependency(affected, type, asDouble(depData.get("modifierValue"), 0.0)));
+        }
+        return List.copyOf(parsed);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<SkillCounter> parseSkillCounters(Object countersObj) {
+        if (!(countersObj instanceof List<?> rawCounters)) {
+            return List.of();
+        }
+        List<SkillCounter> parsed = new ArrayList<>();
+        for (Object counterObj : rawCounters) {
+            if (!(counterObj instanceof Map<?, ?> rawMap)) {
+                continue;
+            }
+            Map<String, Object> counterData = (Map<String, Object>) rawMap;
+            String counterName = asString(counterData.get("counterSkillName"), "").trim();
+            String targetName = asString(counterData.get("targetSkillName"), "").trim();
+            if (counterName.isBlank() || targetName.isBlank()) {
+                continue;
+            }
+            SkillCounter.CounterType type;
+            try {
+                type = SkillCounter.CounterType.valueOf(
+                        asString(counterData.get("type"), "").trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ex) {
+                continue;
+            }
+            int reduction = Math.max(0, Math.min(100, asInt(counterData.get("damageReductionPercent"), 0)));
+            parsed.add(new SkillCounter(counterName, targetName, type, reduction));
+        }
+        return List.copyOf(parsed);
     }
 
     private static double asDouble(Object value, double defaultValue) {
@@ -1120,6 +1528,8 @@ public class HttpRelayServer {
         final String characterType;
         final List<SkillTemplate> customSkills;
         final int turnEnergyCap;
+        final String skinColorHex;
+        final String outfitColorHex;
         final Object lock = new Object();
         final List<QueuedEvent> events = new ArrayList<>();
         volatile long nextSeq = 1L;
@@ -1134,7 +1544,9 @@ public class HttpRelayServer {
                 String accountId,
                 String characterType,
                 List<SkillTemplate> customSkills,
-                int turnEnergyCap
+                int turnEnergyCap,
+                String skinColorHex,
+                String outfitColorHex
         ) {
             this.playerId = playerId;
             this.nickname = nickname;
@@ -1143,6 +1555,8 @@ public class HttpRelayServer {
             this.characterType = characterType;
             this.customSkills = customSkills == null ? List.of() : List.copyOf(customSkills);
             this.turnEnergyCap = turnEnergyCap;
+            this.skinColorHex = skinColorHex;
+            this.outfitColorHex = outfitColorHex;
         }
     }
 
@@ -1164,6 +1578,8 @@ public class HttpRelayServer {
         final Map<String, List<SkillTemplate>> playerSkills = new ConcurrentHashMap<>();
         final Map<String, Integer> skillCooldowns = new ConcurrentHashMap<>();
         final Map<String, GameCharacter> characterByPlayer = new ConcurrentHashMap<>();
+        final Map<String, Long> reconnectDeadlineByPlayer = new ConcurrentHashMap<>();
+        final Map<String, ScheduledFuture<?>> reconnectTimeoutByPlayer = new ConcurrentHashMap<>();
         volatile ScheduledFuture<?> timeoutFuture;
 
         private RelayMatch(String matchId, GameSession game, BattleMap map, ReplayRecorder replayRecorder) {

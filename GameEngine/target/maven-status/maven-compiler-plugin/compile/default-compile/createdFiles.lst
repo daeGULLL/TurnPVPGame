@@ -19,6 +19,7 @@ com\turngame\domain\character\GameCharacter.class
 com\turngame\factory\character\MageCharacterFactory.class
 com\turngame\factory\character\WarriorCharacterFactory.class
 com\turngame\factory\skill\SkillFactoryProvider.class
+com\turngame\server\HttpRelayServer$ResumeHandler.class
 com\turngame\server\protocol\ResponseMessage.class
 com\turngame\domain\skill\SkillTemplate.class
 com\turngame\engine\command\MoveAction.class

@@ -1,8 +1,12 @@
 package com.turngame.server;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+
 import com.google.gson.Gson;
 import com.turngame.domain.enums.ActionType;
-import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.engine.command.AttackAction;
 import com.turngame.engine.command.DefendAction;
 import com.turngame.engine.command.EndTurnAction;
@@ -20,10 +24,6 @@ import jakarta.websocket.OnMessage;
 import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.ServerEndpoint;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
 
 /**
  * WebSocket endpoint for real-time game events and actions.
@@ -137,6 +137,11 @@ public class GameWebSocketEndpoint {
 
         matchId = asString(payload.get("matchId"), matchId);
         if (matchId == null || matchId.isBlank()) {
+            return;
+        }
+
+        if ("SURRENDER".equals(actionType)) {
+            relayServer.submitSurrender(matchId, playerId, "ws-action");
             return;
         }
 

@@ -1,153 +1,137 @@
 # MageFight
 
-MageFight는 두 개의 Maven 모듈로 나뉜 게임 클라이언트입니다.
+MageFight는 Turn Game Engine 위에서 동작하는 전투형 게임 클라이언트입니다.
+프로젝트의 핵심 목표는 엔진과 게임 콘텐츠/UI를 분리해 재사용성과 확장성을 확보하는 것입니다.
 
-- `magefight-content`: 아키타입, 스킬 트리, 성장 규칙, 프리셋 팩토리를 담당합니다.
-- `magefight-client`: Swing 기반 런처와 전투 UI를 담당합니다.
+## 모듈 구성
 
-이 분리는 게임 고유 규칙을 재사용 가능한 엔진과 분리하기 위한 것입니다. 즉, MageFight는 `turngame-engine` 위에 얹히는 콘텐츠와 표현 계층입니다.
+- `GameEngine`
+  - 턴 처리, 액션 검증, 상태 동기화, 매치메이킹, 재접속 처리, 리플레이 기록 담당
+- `MageFight`
+  - `magefight-content`: 아키타입, 스킬 트리, 성장/해금 규칙
+  - `magefight-client`: Swing 기반 런처, 로비, 전투 UI
 
-화면의 목표는 단순한 텍스트 나열이 아니라, 로그인부터 로비, 아키타입 성장, 스킬 해금의 안개, 전투 상태까지 한 번에 읽히는 전투형 UI를 만드는 것입니다.
+## 전투 처리 방식 (현재 구현 기준)
+
+- 전투는 윈도우(window) 기반 동시 행동 처리 방식입니다.
+- 각 플레이어는 윈도우 동안 행동을 큐에 쌓고, `END_TURN`으로 확정합니다.
+- 양쪽이 준비되면 서버가 큐를 정산하고 결과를 상태 이벤트로 전파합니다.
+- 클라이언트는 `resolutionSteps`를 받아 단계별 전투 연출을 재생합니다.
+
+즉, 실시간 즉시 반영형이 아니라 정산형 턴제 구조입니다.
 
 ## 빌드
 
-1. 먼저 `GameEngine` 프로젝트를 빌드하고, 로컬 Maven 저장소에 설치되어 있어야 합니다.
-2. 가능하면 최상위 [workspace root](../pom.xml)를 열어 `GameEngine`과 `MageFight`를 함께 로드하세요.
-3. 이 디렉터리에서 `mvn package`를 실행하면 `MageFight` 두 모듈이 함께 빌드됩니다.
+1. 먼저 `GameEngine`을 빌드해 로컬 Maven 저장소에 설치합니다.
+2. 가능하면 최상위 `pom.xml`(workspace root)에서 두 프로젝트를 함께 로드합니다.
+3. `MageFight` 디렉터리에서 `mvn package`를 실행합니다.
 
-## 실행
-
-실행 진입점은 `magefight-client` 모듈의 `com.magefight.MageFightApp`입니다.
-
-IntelliJ에서 열 때는 루트 `pom.xml`을 가져와서 두 모듈이 모두 인식되도록 하세요.
-
-### 로컬 게임 (싱글플레이)
-
-1. MageFightApp을 실행
-2. 로그인 후 "Start Battle (Local)" 버튼 클릭
-3. 봇(AI)과 싱글플레이 게임 시작
-
-#### 로컬에서 바로 실행하는 방법
-
-개발/테스트용으로는 IDE에서 `com.magefight.MageFightApp`을 직접 실행하는 방식이 가장 간단합니다.
-
-CLI로 실행하려면 먼저 `GameEngine`과 `MageFight`를 빌드해 두고, 이 순서대로 실행하세요.
+권장 순서:
 
 ```bash
 cd GameEngine
 mvn clean package
 
 cd ../MageFight
-mvn -pl magefight-client -am exec:java -Dexec.mainClass=com.magefight.MageFightApp
-```
-
-이 프로젝트는 `magefight-client`가 `magefight-content`와 `GameEngine`에 의존하므로, 단일 JAR만으로는 바로 실행되지 않습니다. 배포용으로는 아래의 릴리스 패키지 방식이 필요합니다.
-
-### 온라인 멀티플레이 (네트워크)
-
-#### 서버 호스팅 (Cloudflare)
-
-**1. 서버 빌드**
-```bash
-cd GameEngine
 mvn clean package
 ```
 
-**2. 서버 실행** (클라우드플레어 호스팅 머신)
-```bash
-# yeunsuh.online (또는 서브도메인)에서 포트 9090 listen
-java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
-```
+## 실행
 
-**3. Cloudflare 설정**
-- DNS A 레코드 추가:
-  - `game.yeunsuh.online` → 서버 IP
-  - 또는 `yeunsuh.online` → 서버 IP
-- Cloudflare > SSL/TLS: Full (strict) 또는 Flexible 설정
-- 방화벽 규칙에서 포트 9090 허용
-- 중요: Cloudflare 프록시(오렌지 구름)가 켜진 상태에서는 9090이 차단될 수 있습니다.
-  - `game.yeunsuh.online`는 DNS only(회색 구름)로 두거나,
-  - 서버 포트를 Cloudflare 지원 포트(예: 8080, 8443 등)로 변경하세요.
+- 클라이언트 진입점: `com.magefight.MageFightApp`
+- IDE에서는 루트 `pom.xml` 기준으로 모듈을 함께 열어 실행하는 방식을 권장합니다.
 
-#### 클라이언트 연결
+### 로컬 게임 (싱글플레이)
 
 1. MageFightApp 실행
-2. 로그인 후 "Find Online Match" 버튼 클릭
-3. 로비 화면에서:
-   - **Server Host**: `game.yeunsuh.online` (또는 `yeunsuh.online`)
-   - **Server Port**: `9090`
-   - **Nickname**: 플레이어 닉네임
-   - **Character**: 아키타입 선택
-4. "Find Game" 버튼 클릭
-5. 다른 플레이어가 연결될 때까지 대기
-6. 매칭 완료 → 게임 시작
+2. 로그인 후 "Start Battle (Local)" 클릭
+3. 봇과 전투 시작
 
-참고: 클라이언트는 `game.yeunsuh.online:9090` 직결이 실패하면 자동으로 `https://game.yeunsuh.online` 경로로 재시도합니다.
+## 온라인 멀티플레이 (현재 네트워크 구조)
 
-#### 네트워크 구조
+기존 단순 TCP 소켓 1:1 모델 설명은 현재 코드와 다릅니다.
+현재는 HTTP Relay 중심 + 이벤트 채널 구조입니다.
 
-```
-클라이언트1 (Player1)
-    ↓ (TCP Socket)
-    
-GameServer (yeunsuh.online:9090)
-├── ClientHandler-1: Player1 통신
-├── ClientHandler-2: Player2 통신
-└── GameSession: 게임 상태 관리
-    ↓ (TCP Socket)
-    
-클라이언트2 (Player2)
-```
+### 서버
 
-#### 프로토콜
+- 서버 진입점: `com.turngame.server.HttpRelayServerMain`
+- 주요 API 컨텍스트:
+  - `/api/join`
+  - `/api/action`
+  - `/api/events`
+  - `/api/events/stream`
+  - `/api/disconnect`
+  - `/api/resume`
+- 상태 확인: `/health`
+- WebSocket 서버는 HTTP 포트 + 1 포트에서 동작
 
-모든 통신은 JSON 기반입니다:
+### 클라이언트 연결/진행 흐름
 
-**클라이언트 → 서버**
-```json
-{
-  "type": "ACTION",
-  "requestId": "uuid",
-  "payload": {
-    "matchId": "match-id",
-    "actionType": "ATTACK|DEFEND|USE_SKILL|MOVE|END_TURN",
-    "targetId": "p-2",
-    "damage": 5
-  }
-}
-```
+1. 로비에서 `Find Game` 요청
+2. 매칭 수신 (`MATCHED`)
+3. 전투 시작 신호 및 상태 동기화 (`MATCH_STARTED`, `STATE_UPDATED`)
+4. 플레이어 액션은 HTTP `/api/action`으로 전송
+5. 이벤트는 WebSocket 우선 수신, 필요 시 즉시 동기화 요청
 
-**서버 → 클라이언트**
-```json
-{
-  "type": "STATE_UPDATED",
-  "requestId": "uuid",
-  "payload": {
-    "matchId": "match-id",
-    "turnPlayerId": "p-1",
-    "players": [
-      {"playerId": "p-1", "hp": 80, "maxHp": 100},
-      {"playerId": "p-2", "hp": 95, "maxHp": 100}
-    ]
-  }
-}
-```
+### 이벤트 전달과 동기화
 
-자세한 프로토콜은 [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md) 참고
+- 서버 이벤트는 시퀀스(`_eventSeq`) 기반으로 관리됩니다.
+- 클라이언트는 마지막 적용 시퀀스를 기준으로 중복을 제거합니다.
+- WebSocket 재연결 시 누락 이벤트를 재동기화할 수 있도록 설계되어 있습니다.
+- 이벤트 수신 경로는 WebSocket + HTTP 이벤트 조회/스트림을 함께 고려한 구조입니다.
 
-### 배포해서 다른 사람에게 전달하는 방법
+## 이동/스킬/에너지 규칙 (요약)
 
-JAR 파일 하나만 보내는 방식은 권장하지 않습니다. 이 프로젝트는 외부 의존성이 있으므로, 다음 둘 중 하나로 전달해야 합니다.
+`BasicRuleSet` 기준으로 다음이 적용됩니다.
 
-1. **가장 권장**: fat JAR 하나와 실행 스크립트를 함께 묶어서 ZIP으로 전달
-  - `magefight-client`와 `magefight-content` 그리고 외부 라이브러리를 모두 포함한 실행 JAR 생성
-  - `run-magefight.bat` 또는 `run-magefight.sh` 제공
-  - 사용자는 ZIP을 풀고 스크립트만 실행
-2. **개발자용 전달**: 소스 전체와 Maven 환경을 함께 전달
-  - 받는 사람이 Java 17과 Maven을 설치해야 함
-  - `GameEngine`과 `MageFight`를 각각 빌드한 뒤 실행
+- 이동(MOVE)
+  - 맵 경계, 통과 가능 타일, 생존 여부 검증
+  - 같은 윈도우에서 큐에 쌓인 이전 이동을 반영한 "예상 위치" 기준 검증
+  - 한 번의 이동 가능 거리(`moveRange`)와 윈도우 에너지 제한을 함께 적용
+- 스킬(USE_SKILL)
+  - 스킬 템플릿/사거리/조준 좌표/성공 판정 기반 처리
+  - 성공/실패에 따른 에너지 비용 및 피해 반영
+- 공격/방어/턴종료
+  - 인접 판정, 방어 상태, 에너지 소모, 턴 종료 정산 규칙 반영
 
-배포 패키지 예시:
+## 기권/종료/연결 끊김 처리
+
+### 기권 (`SURRENDER`)
+
+- 클라이언트가 `SURRENDER` 액션을 전송하면 서버가 `GAME_ENDED` 이벤트를 생성합니다.
+- 종료 payload에는 `winnerId`, `reason`, `surrenderedPlayerId`가 포함됩니다.
+- 서버는 매치 참가자에게 종료 이벤트를 전송하고 매치를 정리합니다.
+
+### 재접속 유예
+
+- 플레이어 연결이 끊기면 상대에게 `PLAYER_DISCONNECTED` 이벤트를 전달하고,
+  재접속 유예 시간(`reconnectDeadlineEpochMs`)을 부여합니다.
+- 유예 내 복귀 시 `PLAYER_RECONNECTED`/`MATCH_RESUMED` 흐름으로 진행합니다.
+- 유예 내 미복귀 시 상대 승 처리(`PLAYER_ABANDONED`)로 종료됩니다.
+
+### 로비 복귀/이어하기
+
+- 클라이언트는 재개 가능한 매치(`canResume`, `resumableMatchId`)를 감지하고
+  로비에서 `Resume Game` 흐름을 제공할 수 있습니다.
+
+## UI 동작 원칙 (온라인 전투)
+
+- 온라인 상태는 서버 `STATE_UPDATED`를 기준으로 동기화합니다.
+- 정산 연출은 `resolutionSteps`가 새 윈도우로 갱신되었을 때 재생됩니다.
+- 재접속 대기 중에는 "Waiting..." 다이얼로그와 남은 시간 표시가 노출됩니다.
+
+## Cloudflare 및 운영 메모
+
+- 기본 서버 호스트는 `game.yeunsuh.online` 기준으로 구성되어 있습니다.
+- 클라이언트 기본 포트는 환경/시스템 속성으로 주입 가능합니다.
+- Cloudflare 프록시/포트 정책에 따라 직접 포트 접근이 제한될 수 있으므로,
+  DNS/SSL/방화벽 구성을 실제 운영 환경에 맞게 설정해야 합니다.
+
+## 배포
+
+배포는 fat JAR + 실행 스크립트 번들을 권장합니다.
+
+예시:
 
 ```text
 MageFight-Release/
@@ -158,266 +142,82 @@ MageFight-Release/
 └── README.txt (optional)
 ```
 
-#### 실제 배포 과정
-
-**1단계: Fat JAR 빌드 (개발자)**
-```bash
-cd c:\Users\cathy\workspace\MageFight
-mvn clean package
-```
-
-생성 파일:
-```
-magefight-client/target/magefight-client-1.0.0-all.jar
-```
-
-**2단계: 배포 폴더 준비**
-```bash
-# 배포 폴더 생성
-mkdir MageFight-Release
-cd MageFight-Release
-
-# 빌드 산출물 복사
-copy ..\magefight-client\target\magefight-client-1.0.0-all.jar .
-
-# 실행 스크립트 복사
-copy ..\run-magefight.bat .
-copy ..\run-magefight.sh .
-copy ..\QUICKSTART.txt .
-```
-
-**3단계: ZIP으로 압축 후 전달**
-```bash
-# Windows PowerShell
-Compress-Archive -Path MageFight-Release -DestinationPath MageFight-v1.0.0.zip
-
-# 또는 7-zip / WinRAR 등의 도구 사용
-```
-
-#### 사용자 입장에서의 실행
-
-1. ZIP 파일 다운로드 및 압축 해제
-2. Java 17 이상 설치 확인
-3. `run-magefight.bat` (Windows) 또는 `run-magefight.sh` (macOS/Linux) 실행
-4. 로그인 → 아키타입 선택 → "Find Online Match" → 게임 시작
-
-**서버 정보는 자동으로 `game.yeunsuh.online:9090`으로 설정됩니다.**
-
 ## 프로젝트 메모
 
-- `magefight-content`는 아키타입, 스킬 트리, 성장, 해금 규칙의 데이터 모델을 소유합니다.
-- `magefight-client`는 런처, 로비, 스킬 트리, 전투 화면을 렌더링합니다.
-- 모듈 분리는 의도된 설계입니다. 엔진은 재사용 가능하게 두고, MageFight는 게임 전용 클라이언트로 독립적으로 확장할 수 있게 했습니다.
-
+- `magefight-content`는 게임 데이터/성장 규칙의 소유자입니다.
+- `magefight-client`는 런처/로비/전투 UI와 온라인 동기화 표현 계층입니다.
+- 엔진은 재사용 가능하도록 유지하고, MageFight는 게임 전용 클라이언트로 확장합니다.
 
 ---
 
 # English Notes
 
-MageFight is split into two Maven modules.
+MageFight is a battle-oriented game client built on top of the reusable turn-based engine.
+The main design goal is clear separation between engine logic and game-specific content/UI.
 
-- `magefight-content`: archetypes, skill trees, progression logic, and preset factories.
-- `magefight-client`: Swing launcher and battle UI.
+## Module Structure
 
-This split keeps game-specific rules separate from the reusable engine. In practice, MageFight is the content and presentation layer on top of `turngame-engine`.
+- `GameEngine`
+  - turn windows, action validation, synchronization, matchmaking, reconnect handling, replay recording
+- `MageFight`
+  - `magefight-content`: archetypes, skill trees, progression and unlock rules
+  - `magefight-client`: Swing launcher, lobby, battle UI
 
-The visual goal is not just to show text data, but to present progression as a readable battle-oriented UI: login, lobby, archetype evolution, skill unlock fog, and battle status.
+## Current Online Architecture
 
-## Build
+The implementation is no longer a simple direct TCP client model.
+It is an HTTP relay-centered architecture with event channels.
 
-1. Build and install the engine project first if it is not already available in your local Maven repository.
-2. Prefer opening the top-level [workspace root](../pom.xml) so `GameEngine` and `MageFight` are loaded together.
-3. From this directory, run `mvn package` to build both MageFight modules.
+Server endpoints include:
 
-## Run
+- `/api/join`
+- `/api/action`
+- `/api/events`
+- `/api/events/stream`
+- `/api/disconnect`
+- `/api/resume`
+- `/health`
 
-Run the client entry point from the `magefight-client` module: `com.magefight.MageFightApp`.
+WebSocket is used for real-time event delivery (server port + 1), while actions are sent through HTTP for deterministic request/response handling.
 
-If you open the project in IntelliJ, import the root `pom.xml` so both modules are loaded.
+## Match Flow
 
-### Local Play (Singleplayer vs Bot)
+1. Client requests matchmaking (`Find Game`)
+2. Match signals arrive (`MATCHED`)
+3. Battle state sync begins (`MATCH_STARTED`, `STATE_UPDATED`)
+4. Players submit actions via `/api/action`
+5. Server resolves queued actions per window and sends updated state
 
-1. Run MageFightApp
-2. Log in and click "Start Battle (Local)"
-3. Play against the AI bot locally
+## Sync and Event Ordering
 
-#### Run locally from the command line
+- Events are sequence-based (`_eventSeq`).
+- Client deduplicates by last applied sequence.
+- Reconnect paths include missed-event synchronization.
 
-For development and testing, the simplest option is to run `com.magefight.MageFightApp` directly from your IDE.
+## Surrender / Disconnect / Resume
 
-If you want to run from the command line, build both `GameEngine` and `MageFight` first, then run:
+- `SURRENDER` produces `GAME_ENDED` with `winnerId`, `reason`, `surrenderedPlayerId`.
+- On disconnect, server broadcasts `PLAYER_DISCONNECTED` with reconnect deadline.
+- If reconnection succeeds in time, match resumes (`PLAYER_RECONNECTED` / `MATCH_RESUMED`).
+- If not, the match ends with abandonment reason.
+
+## Build and Run
 
 ```bash
 cd GameEngine
 mvn clean package
 
 cd ../MageFight
-mvn -pl magefight-client -am exec:java -Dexec.mainClass=com.magefight.MageFightApp
-```
-
-This project depends on `magefight-content` and `GameEngine`, so a single plain JAR is not enough by itself. For distribution, use a release bundle.
-
-### Online Multiplayer
-
-#### Server Hosting (Cloudflare)
-
-**1. Build Server**
-```bash
-cd GameEngine
 mvn clean package
 ```
 
-**2. Run Server** (on your Cloudflare-hosted machine)
-```bash
-# Listen on port 9090 at yeunsuh.online (or subdomain)
-java -cp target/turngame-engine-1.0.0.jar com.turngame.server.HttpRelayServerMain 9090 20
-```
+Client entry point: `com.magefight.MageFightApp`.
 
-**3. Cloudflare Configuration**
-- Add DNS A record:
-  - `game.yeunsuh.online` → Your server IP
-  - Or `yeunsuh.online` → Your server IP
-- Cloudflare > SSL/TLS: Full (strict) or Flexible
-- Firewall Rules: Allow port 9090
+## Distribution
 
-#### Client Connection
-
-1. Run MageFightApp
-2. Log in and click "Find Online Match"
-3. In the lobby screen:
-   - **Server Host**: `game.yeunsuh.online` (or `yeunsuh.online`)
-   - **Server Port**: `9090`
-   - **Nickname**: Your player nickname
-   - **Character**: Select archetype
-4. Click "Find Game"
-5. Wait for another player to connect
-6. Match starts → Game begins
-
-#### Network Architecture
-
-```
-Client1 (Player1)
-    ↓ (TCP Socket)
-    
-GameServer (yeunsuh.online:9090)
-├── ClientHandler-1: Player1 communication
-├── ClientHandler-2: Player2 communication
-└── GameSession: Game state management
-    ↓ (TCP Socket)
-    
-Client2 (Player2)
-```
-
-#### Communication Protocol
-
-All communication is JSON-based:
-
-**Client → Server**
-```json
-{
-  "type": "ACTION",
-  "requestId": "uuid",
-  "payload": {
-    "matchId": "match-id",
-    "actionType": "ATTACK|DEFEND|USE_SKILL|MOVE|END_TURN",
-    "targetId": "p-2",
-    "damage": 5
-  }
-}
-```
-
-**Server → Client**
-```json
-{
-  "type": "STATE_UPDATED",
-  "requestId": "uuid",
-  "payload": {
-    "matchId": "match-id",
-    "turnPlayerId": "p-1",
-    "players": [
-      {"playerId": "p-1", "hp": 80, "maxHp": 100},
-      {"playerId": "p-2", "hp": 95, "maxHp": 100}
-    ]
-  }
-}
-```
-
-For full protocol details, see [PROTOCOL_API.md](../GameEngine/PROTOCOL_API.md)
-
-### How to distribute it to other people
-
-Sending only a single JAR is not recommended here because the client has external dependencies. Use one of these approaches instead:
-
-1. **Recommended**: package a fat JAR plus launch scripts in a ZIP
-  - build one runnable JAR that includes `magefight-client`, `magefight-content`, and all external libraries
-  - provide `run-magefight.bat` or `run-magefight.sh`
-  - the recipient only unzips and runs the script
-2. **Developer handoff**: send the full source and Maven setup
-  - the recipient needs Java 17 and Maven
-  - they build `GameEngine` and `MageFight` separately before running
-
-Example release layout:
-
-```text
-MageFight-Release/
-├── magefight-all.jar
-├── run-magefight.bat
-├── run-magefight.sh
-├── QUICKSTART.txt
-└── README.txt (optional)
-```
-
-#### Actual deployment process
-
-**Step 1: Build fat JAR (developer)**
-```bash
-cd c:\Users\cathy\workspace\MageFight
-mvn clean package
-```
-
-Output file:
-```
-magefight-client/target/magefight-client-1.0.0-all.jar
-```
-
-**Step 2: Prepare release folder**
-```bash
-# Create release directory
-mkdir MageFight-Release
-cd MageFight-Release
-
-# Copy the JAR
-copy ..\magefight-client\target\magefight-client-1.0.0-all.jar .
-
-# Copy launch scripts
-copy ..\run-magefight.bat .
-copy ..\run-magefight.sh .
-copy ..\QUICKSTART.txt .
-```
-
-**Step 3: Package as ZIP and distribute**
-```bash
-# Windows PowerShell
-Compress-Archive -Path MageFight-Release -DestinationPath MageFight-v1.0.0.zip
-```
-
-#### End-user flow
-
-1. Download and unzip the release
-2. Confirm Java 17+ is installed
-3. Run `run-magefight.bat` (Windows) or `run-magefight.sh` (macOS/Linux)
-4. Log in → Select archetype → "Find Online Match" → Game starts
-
-**The server address `game.yeunsuh.online:9090` is hardcoded and cannot be changed.**
-
-## Project Notes
-
-- `magefight-content` owns the data model for archetypes, skill trees, progression, and unlock rules.
-- `magefight-client` renders the launcher, lobby, skill tree, and battle screen.
-- The module split is intentional: the engine stays reusable, while MageFight can keep evolving as a game-specific client without mixing concerns.
+Recommended delivery is a release bundle containing a fat JAR plus launch scripts.
 
 ## AI Usage Notes
 
-- I planned the overall flow and game elements, then reviewed and adjusted the code generated with AI assistance.
-- The concrete MageFight implementation was produced with AI support, while I handled structure and behavior review.
-- This README focuses on project intent and module responsibilities without overstating personal implementation work.
+- The project structure and gameplay flow were planned first.
+- AI-assisted code was reviewed and adjusted to match desired behavior and architecture.

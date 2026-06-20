@@ -78,6 +78,10 @@ final class BattleViewPanel extends JPanel {
 
         Color playerOutfitColor();
 
+        Color opponentSkinColor();
+
+        Color opponentOutfitColor();
+
         boolean onlineMode();
 
         String selfHudTag();
@@ -470,14 +474,24 @@ final class BattleViewPanel extends JPanel {
             uy += bounceShake;
         }
 
-        Color robeColor = player
-                ? host.playerOutfitColor()
-                : switch (archetype) {
-            case ELEMENTALIST -> new Color(230, 114, 72);
-            case RUNE_SCHOLAR -> new Color(120, 132, 219);
-            case APPRENTICE -> new Color(128, 168, 220);
-        };
-        Color skinColor = player ? host.playerSkinColor() : new Color(245, 224, 200);
+        Color robeColor;
+        Color skinColor;
+        if (player) {
+            robeColor = host.playerOutfitColor();
+            skinColor = host.playerSkinColor();
+        } else if (host.onlineMode()) {
+            // 온라인 상대: 서버에서 동기화된 실제 외형 사용
+            robeColor = host.opponentOutfitColor();
+            skinColor = host.opponentSkinColor();
+        } else {
+            // 오프라인 봇: 아키타입 기반 기본 색
+            robeColor = switch (archetype) {
+                case ELEMENTALIST -> new Color(230, 114, 72);
+                case RUNE_SCHOLAR -> new Color(120, 132, 219);
+                case APPRENTICE -> new Color(128, 168, 220);
+            };
+            skinColor = new Color(245, 224, 200);
+        }
 
         g2.setColor(new Color(0, 0, 0, 100));
         g2.fillOval(ux + 6, uy + unitH - 8, unitW - 12, 14);

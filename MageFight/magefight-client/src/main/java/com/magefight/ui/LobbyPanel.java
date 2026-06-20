@@ -17,12 +17,24 @@ import javax.swing.Timer;
  * 게임 로비 - 서버 연결, 플레이어 설정, 매칭 대기
  */
 public class LobbyPanel extends JPanel {
+    /**
+     * 매칭 요청 시 서버로 보낼 플레이어 프로필(스킬셋/외형/계정/에너지캡).
+     * 매칭은 로비에서 시작되므로 이 정보가 없으면 서버가 starter 스킬·기본색으로 처리한다.
+     */
+    public record MatchProfile(
+            String accountId,
+            java.util.List<java.util.Map<String, Object>> skills,
+            String skinColorHex,
+            String outfitColorHex,
+            Integer turnEnergyCap) {}
+
     private final GameNetworkClient networkClient;
     private final Runnable onGameStarted;
     private final Runnable onBackToLobby;
     private final java.util.function.Supplier<String> nicknameSupplier;
     private final java.util.function.Supplier<String> characterDisplaySupplier;
     private final java.util.function.Supplier<String> serverCharacterTypeSupplier;
+    private final java.util.function.Supplier<MatchProfile> matchProfileSupplier;
 
     private static final String DEFAULT_SERVER_HOST =
         System.getProperty("magefight.server.host", System.getenv().getOrDefault("MAGEFIGHT_SERVER_HOST", "game.yeunsuh.online"));
@@ -32,6 +44,7 @@ public class LobbyPanel extends JPanel {
     private JLabel nicknameValueLabel;
     private JLabel characterValueLabel;
     private JButton findGameButton;
+    private JButton resumeGameButton;
     private JButton disconnectButton;
     private JButton backButton;
     private JLabel statusLabel;
@@ -44,13 +57,15 @@ public class LobbyPanel extends JPanel {
             Runnable onBackToLobby,
             java.util.function.Supplier<String> nicknameSupplier,
             java.util.function.Supplier<String> characterDisplaySupplier,
-            java.util.function.Supplier<String> serverCharacterTypeSupplier) {
+            java.util.function.Supplier<String> serverCharacterTypeSupplier,
+            java.util.function.Supplier<MatchProfile> matchProfileSupplier) {
         this.networkClient = networkClient;
         this.onGameStarted = onGameStarted;
         this.onBackToLobby = onBackToLobby;
         this.nicknameSupplier = nicknameSupplier;
         this.characterDisplaySupplier = characterDisplaySupplier;
         this.serverCharacterTypeSupplier = serverCharacterTypeSupplier;
+        this.matchProfileSupplier = matchProfileSupplier;
         initUI();
     }
 
@@ -103,14 +118,23 @@ public class LobbyPanel extends JPanel {
         add(findGameButton, gbc);
 
         gbc.gridx = 1;
+        resumeGameButton = new JButton("Resume Game");
+        resumeGameButton.setEnabled(false);
+        resumeGameButton.setVisible(false);
+        resumeGameButton.addActionListener(e -> onResumeGame());
+        add(resumeGameButton, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 4;
+        gbc.gridwidth = 1;
         disconnectButton = new JButton("Disconnect");
         disconnectButton.setEnabled(false);
         disconnectButton.addActionListener(e -> onDisconnect());
         add(disconnectButton, gbc);
 
-        gbc.gridx = 0;
+        gbc.gridx = 1;
         gbc.gridy = 4;
-        gbc.gridwidth = 2;
+        gbc.gridwidth = 1;
         backButton = new JButton("Back to Main Lobby");
         backButton.addActionListener(e -> onBackToLobby());
         add(backButton, gbc);
@@ -180,6 +204,8 @@ public class LobbyPanel extends JPanel {
                 networkClient.setOnMessageReceived(msg -> {
                     System.out.println("[LobbyPanel] message type=" + msg.type() + ", requestId=" + msg.requestId());
                     if ("MATCHED".equalsIgnoreCase(msg.type())) {
+                        networkClient.clearResumableMatch();
+                        setResumeAvailable(false);
                         updateStatus("Match confirmed, initializing...", Color.GREEN);
                         String playerId = String.valueOf(msg.payload().get("playerId"));
                         String matchId = String.valueOf(msg.payload().get("matchId"));
@@ -217,16 +243,60 @@ public class LobbyPanel extends JPanel {
                     SwingUtilities.invokeLater(() -> {
                         updateStatus("Disconnected", Color.RED);
                         findGameButton.setEnabled(true);
+                        setResumeAvailable(false);
                         disconnectButton.setEnabled(false);
                     });
                 });
 
-                // 게임 찾기 요청
-                System.out.println("[LobbyPanel] findGame nickname=" + nickname + ", characterType=" + finalCharacterType);
-                networkClient.findGame(nickname, finalCharacterType);
+                networkClient.setOnLobbyNotice(notice -> {
+                    SwingUtilities.invokeLater(() -> updateStatus(notice, Color.ORANGE));
+                });
+
+                // 게임 찾기 요청 (스킬셋/외형/계정/에너지캡을 함께 전송한다.
+                // 이게 없으면 서버가 starter 스킬 1개와 기본색으로 매치를 만든다.)
+                MatchProfile profile = matchProfileSupplier == null ? null : matchProfileSupplier.get();
+                System.out.println("[LobbyPanel] findGame nickname=" + nickname + ", characterType=" + finalCharacterType
+                        + ", skills=" + (profile == null || profile.skills() == null ? 0 : profile.skills().size())
+                        + ", skin=" + (profile == null ? null : profile.skinColorHex()));
+                if (profile != null) {
+                    networkClient.setAppearance(profile.skinColorHex(), profile.outfitColorHex());
+                    networkClient.findGame(
+                            nickname,
+                            finalCharacterType,
+                            profile.accountId(),
+                            characterDisplaySupplier == null ? nickname : characterDisplaySupplier.get(),
+                            profile.skills(),
+                            profile.turnEnergyCap());
+                } else {
+                    networkClient.findGame(nickname, finalCharacterType);
+                }
+                if (networkClient.hasResumableMatch()) {
+                    long deadline = networkClient.getResumableReconnectDeadlineEpochMs();
+                    long remainSec = Math.max(0L, (deadline - System.currentTimeMillis()) / 1000L);
+                    updateStatus("Ongoing match found. Resume within " + remainSec + "s", Color.ORANGE);
+                    setResumeAvailable(true);
+                    findGameButton.setEnabled(false);
+                } else {
+                    setResumeAvailable(false);
+                }
 
             } catch (Exception e) {
                 updateStatus("Connection failed: " + e.getMessage(), Color.RED);
+            }
+        }).start();
+    }
+
+    private void onResumeGame() {
+        new Thread(() -> {
+            try {
+                updateStatus("Resuming match...", Color.YELLOW);
+                networkClient.resumeMatch();
+                setResumeAvailable(false);
+                updateStatus("Match resumed. Opening battle view...", Color.GREEN);
+                triggerGameStartOnce();
+            } catch (RuntimeException ex) {
+                updateStatus("Resume failed: " + ex.getMessage(), Color.RED);
+                setResumeAvailable(networkClient.hasResumableMatch());
             }
         }).start();
     }
@@ -240,6 +310,7 @@ public class LobbyPanel extends JPanel {
         gameStartTriggered = false;
         updateStatus("Disconnected", Color.RED);
         findGameButton.setEnabled(true);
+        setResumeAvailable(false);
         disconnectButton.setEnabled(false);
     }
 
@@ -254,6 +325,7 @@ public class LobbyPanel extends JPanel {
         gameStartTriggered = false;
         updateStatus("Disconnected", Color.RED);
         findGameButton.setEnabled(true);
+        setResumeAvailable(false);
         disconnectButton.setEnabled(false);
         if (onBackToLobby != null) {
             SwingUtilities.invokeLater(onBackToLobby);
@@ -336,6 +408,15 @@ public class LobbyPanel extends JPanel {
             startSafetyTimer.stop();
             startSafetyTimer = null;
         }
+    }
+
+    private void setResumeAvailable(boolean available) {
+        SwingUtilities.invokeLater(() -> {
+            if (resumeGameButton != null) {
+                resumeGameButton.setVisible(available);
+                resumeGameButton.setEnabled(available);
+            }
+        });
     }
 
     private static int parseDefaultPort(String value) {

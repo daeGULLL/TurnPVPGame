@@ -1,23 +1,5 @@
 package com.turngame.engine;
 
-import com.turngame.domain.PlayerState;
-import com.turngame.domain.character.GameCharacter;
-import com.turngame.domain.enums.ActionType;
-import com.turngame.domain.map.BattleMap;
-import com.turngame.domain.map.MapCellPosition;
-import com.turngame.domain.skill.SkillTemplate;
-import com.turngame.engine.command.AttackAction;
-import com.turngame.engine.command.EndTurnAction;
-import com.turngame.engine.command.GameAction;
-import com.turngame.engine.command.MoveAction;
-import com.turngame.engine.command.DefendAction;
-import com.turngame.engine.command.UseSkillAction;
-import com.turngame.engine.rules.RuleSet;
-import com.turngame.event.ActionAppliedEvent;
-import com.turngame.event.EventBus;
-import com.turngame.event.GameEndedEvent;
-import com.turngame.event.TurnStartedEvent;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -27,6 +9,24 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import com.turngame.domain.PlayerState;
+import com.turngame.domain.character.GameCharacter;
+import com.turngame.domain.enums.ActionType;
+import com.turngame.domain.map.BattleMap;
+import com.turngame.domain.map.MapCellPosition;
+import com.turngame.domain.skill.SkillTemplate;
+import com.turngame.engine.command.AttackAction;
+import com.turngame.engine.command.DefendAction;
+import com.turngame.engine.command.EndTurnAction;
+import com.turngame.engine.command.GameAction;
+import com.turngame.engine.command.MoveAction;
+import com.turngame.engine.command.UseSkillAction;
+import com.turngame.engine.rules.RuleSet;
+import com.turngame.event.ActionAppliedEvent;
+import com.turngame.event.EventBus;
+import com.turngame.event.GameEndedEvent;
+import com.turngame.event.TurnStartedEvent;
 
 public class GameSession {
     private final String matchId;
@@ -420,20 +420,29 @@ public class GameSession {
 
     private void assignInitialPosition(String playerId) {
         MapCellPosition spawn;
-        if ("p-1".equals(playerId)) {
-            spawn = new MapCellPosition(0, battleMap.rows() - 1);
-        } else if ("p-2".equals(playerId)) {
-            spawn = new MapCellPosition(battleMap.cols() - 1, 0);
+        if (playerPositions.isEmpty()) {
+            spawn = preferredOrFirstAvailable(0, battleMap.rows() - 1);
+        } else if (playerPositions.size() == 1) {
+            spawn = preferredOrFirstAvailable(battleMap.cols() - 1, 0);
         } else {
             spawn = firstAvailableCell();
         }
         playerPositions.put(playerId, spawn);
     }
 
+    private MapCellPosition preferredOrFirstAvailable(int preferredCol, int preferredRow) {
+        if (isInsideMap(preferredCol, preferredRow)
+                && isPassableCell(preferredCol, preferredRow)
+                && !isCellOccupied(preferredCol, preferredRow, null)) {
+            return new MapCellPosition(preferredCol, preferredRow);
+        }
+        return firstAvailableCell();
+    }
+
     private MapCellPosition firstAvailableCell() {
         for (int row = 0; row < battleMap.rows(); row++) {
             for (int col = 0; col < battleMap.cols(); col++) {
-                if (!isCellOccupied(col, row, null)) {
+                if (isPassableCell(col, row) && !isCellOccupied(col, row, null)) {
                     return new MapCellPosition(col, row);
                 }
             }

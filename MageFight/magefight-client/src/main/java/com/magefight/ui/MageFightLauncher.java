@@ -26,6 +26,8 @@ import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JTextField;
 
+import com.magefight.content.factory.GamePresetFactory;
+import com.magefight.content.model.FighterSpec;
 import com.magefight.content.model.MageArchetype;
 import com.magefight.content.progress.ArchetypeUnlockService;
 import com.magefight.content.progress.MageProgress;
@@ -68,6 +70,7 @@ public class MageFightLauncher extends JFrame {
     private MageProgress progress = MageProgress.starter();
     private GameNetworkClient networkClient;
     private LobbyPanel onlineLobbyPanel;
+    private final GamePresetFactory presetFactory = new GamePresetFactory();
 
     public MageFightLauncher() {
         super("MageFight - Login");
@@ -452,7 +455,8 @@ public class MageFightLauncher extends JFrame {
                 this::showLobby,
                 this::currentNickname,
                 this::currentArchetypeDisplay,
-                this::currentServerCharacterType
+                this::currentServerCharacterType,
+                this::currentMatchProfile
         );
         cardPanel.add(onlineLobbyPanel, "onlineMatch");
     }
@@ -486,6 +490,28 @@ public class MageFightLauncher extends JFrame {
         return switch (selected) {
             case APPRENTICE, ELEMENTALIST, RUNE_SCHOLAR -> "MAGE";
         };
+    }
+
+    private MageArchetype currentArchetype() {
+        MageArchetype selected = (MageArchetype) archetypeCombo.getSelectedItem();
+        if (selected == null) {
+            selected = progress.selectedArchetype();
+        }
+        return selected == null ? MageArchetype.APPRENTICE : selected;
+    }
+
+    /**
+     * 매칭 요청에 함께 보낼 내 프로필(스킬셋/외형/계정/에너지캡)을 클릭 시점 기준으로 만든다.
+     */
+    private LobbyPanel.MatchProfile currentMatchProfile() {
+        MageArchetype archetype = currentArchetype();
+        FighterSpec spec = presetFactory.createPlayerSpec(archetype, progress);
+        return new LobbyPanel.MatchProfile(
+                accountId,
+                MageFightFrame.buildOnlineSkillPayload(spec),
+                toHex(selectedSkinColor),
+                toHex(selectedOutfitColor),
+                MageFightFrame.resolveTurnEnergyCap(archetype));
     }
 
     private void showOnlineMatchCard() {

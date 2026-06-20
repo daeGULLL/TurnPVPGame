@@ -52,6 +52,8 @@ import com.turngame.domain.PlayerState;
 import com.turngame.domain.enums.ActionType;
 import com.turngame.domain.map.BattleMap;
 import com.turngame.domain.map.MapCellPosition;
+import com.turngame.domain.skill.SkillCounter;
+import com.turngame.domain.skill.SkillDependency;
 import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.engine.GameSession;
 import com.turngame.engine.TurnManager;
@@ -85,6 +87,9 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     private final String accountId;
     private final Color playerSkinColor;
     private final Color playerOutfitColor;
+    // 온라인 상대의 외형(서버에서 동기화). 동기화 전 기본값.
+    private Color opponentSkinColor = new Color(0xF5E0C8);
+    private Color opponentOutfitColor = new Color(0x80A8DC);
     private MageProgress progress;
     private GameNetworkClient networkClient;
     private String onlineOpponentId;
@@ -100,7 +105,8 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     private final Map<String, FighterSpec> specs = new HashMap<>();
     private final Map<String, Map<String, Integer>> cooldowns = new HashMap<>();
     private final Random random = new Random();
-    private boolean battleReturnHandled;
+    private final java.util.concurrent.atomic.AtomicBoolean battleReturnHandled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
     private JDialog activeResultDialog;
     private boolean resolutionPlaybackActive;
     private int resolutionPlaybackStepIndex;
@@ -132,9 +138,15 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     private int onlineWindowDurationSeconds = 60;
     private int onlineWindowIndex = -1;
     private long onlineWindowDeadlineMs;
-    private String onlineTurnPlayerId = "";
+    private boolean onlineMyReady;
     private boolean onlineOpponentReady;
+    private long lastAppliedStateEventSeq;
+    private boolean onlinePausedForReconnect;
+    private long onlineReconnectDeadlineEpochMs;
+    private JDialog onlineWaitingDialog;
     private String pendingAimedSkillName;
+    private MapCellPosition onlineLocalProjectedPlayerPos;
+    private int onlineLocalProjectedWindowIndex;
 
     private enum PhaseType {
         CAST,
@@ -207,7 +219,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         this.networkClient = networkClient;
         configureSkillVisualRegistry();
         this.onlineOpponentId = null;
-        this.battleReturnHandled = false;
+        this.battleReturnHandled.set(false);
         this.activeResultDialog = null;
         this.resolutionPlaybackActive = false;
         this.resolutionPlaybackStepIndex = 0;
@@ -219,9 +231,15 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         this.onlineWindowDurationSeconds = 60;
         this.onlineWindowIndex = -1;
         this.onlineWindowDeadlineMs = 0L;
-        this.onlineTurnPlayerId = "";
+        this.onlineMyReady = false;
         this.onlineOpponentReady = false;
+        this.lastAppliedStateEventSeq = -1L;
+        this.onlinePausedForReconnect = false;
+        this.onlineReconnectDeadlineEpochMs = 0L;
+        this.onlineWaitingDialog = null;
         this.pendingAimedSkillName = null;
+        this.onlineLocalProjectedPlayerPos = null;
+        this.onlineLocalProjectedWindowIndex = -1;
         stopOnlineTurnTimer();
         this.pendingPromotionTarget = null;
         this.promotionService.resetForNewMatch();
@@ -515,8 +533,13 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         }
 
         FighterSpec onlineSpec = presetFactory.createPlayerSpec(archetype, progress);
+        System.out.println("[MageFightFrame] online spec: archetype=" + archetype
+                + ", selectedArchetype=" + progress.selectedArchetype()
+                + ", learnedInProgress=" + progress.learnedSkillNames()
+                + ", specSkills=" + onlineSpec.skills().stream().map(SkillTemplate::name).toList());
 
         setActionFeedback("상대 찾는 중...", false);
+        networkClient.setAppearance(colorToHex(playerSkinColor), colorToHex(playerOutfitColor));
         networkClient.findGame(
                 resolveOnlineNickname(),
                 toServerCharacterType(archetype),
@@ -527,7 +550,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         );
     }
 
-    private List<Map<String, Object>> buildOnlineSkillPayload(FighterSpec spec) {
+    static List<Map<String, Object>> buildOnlineSkillPayload(FighterSpec spec) {
         if (spec == null || spec.skills() == null || spec.skills().isEmpty()) {
             return List.of();
         }
@@ -551,12 +574,34 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             effectPayload.put("areaPatternRows", skill.effect().areaPatternRows());
             skillPayload.put("effect", effectPayload);
 
+            // 스킬 간 상호작용(버프/상쇄)도 함께 보내야 온라인에서 동일하게 적용된다.
+            List<Map<String, Object>> depsPayload = new ArrayList<>();
+            for (SkillDependency dep : skill.dependencies()) {
+                Map<String, Object> d = new HashMap<>();
+                d.put("affectedSkillName", dep.affectedSkillName());
+                d.put("type", dep.type().name());
+                d.put("modifierValue", dep.modifierValue());
+                depsPayload.add(d);
+            }
+            skillPayload.put("dependencies", depsPayload);
+
+            List<Map<String, Object>> countersPayload = new ArrayList<>();
+            for (SkillCounter counter : skill.counters()) {
+                Map<String, Object> c = new HashMap<>();
+                c.put("counterSkillName", counter.counterSkillName());
+                c.put("targetSkillName", counter.targetSkillName());
+                c.put("type", counter.type().name());
+                c.put("damageReductionPercent", counter.damageReductionPercent());
+                countersPayload.add(c);
+            }
+            skillPayload.put("counters", countersPayload);
+
             payload.add(skillPayload);
         }
         return List.copyOf(payload);
     }
 
-    private int resolveTurnEnergyCap(MageArchetype archetype) {
+    static int resolveTurnEnergyCap(MageArchetype archetype) {
         if (archetype == null) {
             return 6;
         }
@@ -912,7 +957,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     }
 
     private void onSurrender() {
-        if (battleReturnHandled) {
+        if (battleReturnHandled.get()) {
             return;
         }
 
@@ -927,14 +972,15 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             return;
         }
 
-        battleReturnHandled = true;
         log("플레이어가 기권했습니다.");
-        setActionFeedback("기권 처리됨", true);
+        setActionFeedback("기권 요청 전송됨", true);
 
         if (networkClient != null && networkClient.isConnected()) {
-            networkClient.disconnect();
+            networkClient.surrender();
+            return;
         }
 
+        battleReturnHandled.set(true);
         SwingUtilities.invokeLater(() -> {
             JOptionPane.showMessageDialog(this, "You surrendered.", "Result", JOptionPane.INFORMATION_MESSAGE);
             dispose();
@@ -1002,6 +1048,10 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     private boolean validateMyTurn() {
         // 온라인 게임: 서버가 검증하므로 로컬 검증 스킵
         if (networkClient != null && networkClient.isConnected()) {
+            if (onlinePausedForReconnect) {
+                setActionFeedback("Opponent disconnected. Waiting for reconnect...", true);
+                return false;
+            }
             return true;
         }
 
@@ -1091,6 +1141,9 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
 
     @Override
     public SkillTemplate findSkill(FighterSpec spec, String skillName) {
+        if (spec == null || spec.skills() == null || skillName == null || skillName.isBlank()) {
+            return null;
+        }
         return spec.skills().stream()
                 .filter(s -> s.name().equalsIgnoreCase(skillName))
                 .findFirst()
@@ -1182,12 +1235,11 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
 
     private void updateTopStatusChips(boolean onlineMode) {
         if (onlineMode) {
-            String myId = networkClient == null ? "" : String.valueOf(networkClient.getMyPlayerId());
-            boolean myTurn = !myId.isBlank() && myId.equals(onlineTurnPlayerId);
             long remainingMs = Math.max(0L, onlineWindowDeadlineMs - System.currentTimeMillis());
-            turnOwnerChip.setText(myTurn ? "TURN: YOU" : "TURN: OPPONENT");
+            turnOwnerChip.setText("TURN: SIMULTANEOUS");
             timerChip.setText("TIMER: " + (remainingMs / 1000L) + "s");
-            readyChip.setText(onlineOpponentReady ? "OPP READY" : "OPP THINKING");
+            readyChip.setText((onlineMyReady ? "YOU READY" : "YOU THINKING")
+                + " | " + (onlineOpponentReady ? "OPP READY" : "OPP THINKING"));
             connectionChip.setText(networkClient != null && networkClient.isConnected() ? "NET: CONNECTED" : "NET: DISCONNECTED");
         } else {
             turnOwnerChip.setText("TURN: WINDOW " + session.getCurrentWindowIndex());
@@ -1436,10 +1488,9 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             return;
         }
 
-        if (battleReturnHandled) {
+        if (!battleReturnHandled.compareAndSet(false, true)) {
             return;
         }
-        battleReturnHandled = true;
 
         String text = PLAYER_ID.equals(winner) ? "You Win!" : "Bot Wins";
         log("Game Ended. Winner: " + winner);
@@ -1504,6 +1555,13 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
 
             activeResultDialog = dialog;
             dialog.setVisible(true);
+
+            // 결과창을 띄운 뒤 연결을 끊는다. (게임 종료 → 서버 매치 정리 + resumable 비움 →
+            // 다음 매칭이 완전히 새 게임이 됨. 끊기를 다이얼로그 표시 이후로 둬서
+            // 끊기 부작용이 팝업 표시를 막지 않도록 한다.)
+            if (disconnectOnExit && networkClient != null && networkClient.isConnected()) {
+                networkClient.disconnect();
+            }
         });
     }
 
@@ -1512,9 +1570,11 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         this.onlineOpponentId = null;
         this.pendingOnlineResultText = null;
         this.pendingOnlineResultDisconnect = false;
+        this.onlineLocalProjectedPlayerPos = null;
+        this.onlineLocalProjectedWindowIndex = -1;
         this.pendingPromotionTarget = null;
         this.promotionService.resetForNewMatch();
-        this.battleReturnHandled = false;
+        this.battleReturnHandled.set(false);
         this.resolutionPlaybackActive = false;
         stopPhaseFrameAnimation();
         this.resolutionPlaybackStepIndex = 0;
@@ -1589,7 +1649,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
                     };
 
                     for (int[] d : deltas) {
-                        MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+                        MapCellPosition projectedPos = inputProjectedPosition(actorId, actorPos);
                         int nextCol = projectedPos.col() + d[0];
                         int nextRow = projectedPos.row() + d[1];
                         if (nextCol == projectedPos.col() && nextRow == projectedPos.row()) {
@@ -1606,6 +1666,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
                         }
                         if (executeAction(new MoveAction(actorId, nextCol, nextRow, System.currentTimeMillis()),
                                 actorLabel + " moves to (" + nextCol + "," + nextRow + ").")) {
+                            rememberOnlineProjectedMove(actorId, nextCol, nextRow);
                             return true;
                         }
                     }
@@ -1615,12 +1676,39 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
 
     private boolean tryMoveInDirection(String actorId, MoveDirection direction, String actorLabel) {
         return session.getPlayerPosition(actorId).map(actorPos -> {
-            MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+            MapCellPosition projectedPos = inputProjectedPosition(actorId, actorPos);
             int nextCol = projectedPos.col() + direction.deltaCol;
             int nextRow = projectedPos.row() + direction.deltaRow;
-            return executeAction(new MoveAction(actorId, nextCol, nextRow, System.currentTimeMillis()),
+            boolean accepted = executeAction(new MoveAction(actorId, nextCol, nextRow, System.currentTimeMillis()),
                     actorLabel + " moves " + direction.label + " to (" + nextCol + "," + nextRow + ").");
+            if (accepted) {
+                rememberOnlineProjectedMove(actorId, nextCol, nextRow);
+            }
+            return accepted;
         }).orElse(false);
+    }
+
+    private MapCellPosition inputProjectedPosition(String actorId, MapCellPosition actorPos) {
+        MapCellPosition projectedPos = session.getProjectedPlayerPosition(actorId).orElse(actorPos);
+        if (networkClient != null
+                && networkClient.isConnected()
+                && PLAYER_ID.equals(actorId)
+                && onlineLocalProjectedPlayerPos != null
+                && onlineLocalProjectedWindowIndex == onlineWindowIndex) {
+            return onlineLocalProjectedPlayerPos;
+        }
+        return projectedPos;
+    }
+
+    private void rememberOnlineProjectedMove(String actorId, int col, int row) {
+        if (networkClient == null || !networkClient.isConnected()) {
+            return;
+        }
+        if (!PLAYER_ID.equals(actorId)) {
+            return;
+        }
+        onlineLocalProjectedPlayerPos = new MapCellPosition(col, row);
+        onlineLocalProjectedWindowIndex = onlineWindowIndex;
     }
 
     private Optional<MoveDirection> promptMoveDirection() {
@@ -1957,10 +2045,12 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             return;
         }
         this.onlineOpponentId = null;
-        this.battleReturnHandled = false;
+        this.battleReturnHandled.set(false);
         this.lastPlayedResolvedWindowIndex = -1;
         this.pendingOnlineResultText = null;
         this.pendingOnlineResultDisconnect = false;
+        this.onlineLocalProjectedPlayerPos = null;
+        this.onlineLocalProjectedWindowIndex = -1;
 
         // 매칭 상태 변경 핸들링
         networkClient.setOnMatchStateChanged(state -> {
@@ -2006,6 +2096,10 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
                 handleMatchStarted(msg);
             } else if ("STATE_UPDATED".equalsIgnoreCase(msg.type())) {
                 handleStateUpdated(msg);
+            } else if ("PLAYER_DISCONNECTED".equalsIgnoreCase(msg.type())) {
+                handlePlayerDisconnected(msg);
+            } else if ("PLAYER_RECONNECTED".equalsIgnoreCase(msg.type()) || "MATCH_RESUMED".equalsIgnoreCase(msg.type())) {
+                handleMatchResumed();
             } else if ("GAME_ENDED".equalsIgnoreCase(msg.type())) {
                 handleGameEnded(msg);
             }
@@ -2049,6 +2143,18 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     @SuppressWarnings("unchecked")
     private void handleStateUpdated(com.turngame.server.protocol.ResponseMessage msg) {
         Map<String, Object> payload = msg.payload();
+        if (onlinePausedForReconnect) {
+            onlinePausedForReconnect = false;
+            onlineReconnectDeadlineEpochMs = 0L;
+            dismissReconnectWaitingDialog();
+        }
+        long eventSeq = asLong(payload.get("_eventSeq"), -1L);
+        if (eventSeq >= 0 && eventSeq <= lastAppliedStateEventSeq) {
+            return;
+        }
+        if (eventSeq >= 0) {
+            lastAppliedStateEventSeq = eventSeq;
+        }
         if (networkClient != null) {
             Object matchIdObj = payload.get("matchId");
             if (matchIdObj != null) {
@@ -2061,11 +2167,7 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         OnlineStateSyncService.SyncSnapshot snapshot = applyOnlineSyncSnapshot(payload);
         updateOnlineTurnState(payload);
         startOnlineTurnTimer();
-        String turnPlayerId = snapshot == null ? String.valueOf(payload.get("turnPlayerId")) : snapshot.turnPlayerId();
-        String currentPlayerId = networkClient.getMyPlayerId();
-
-        String turnInfo = "Turn: " + (turnPlayerId.equals(currentPlayerId) ? "YOUR TURN" : "Opponent's Turn");
-        turnLabel.setText(turnInfo);
+        turnLabel.setText(onlineTurnText());
 
         int resolvedWindowIndex = snapshot == null ? -1 : snapshot.resolvedWindowIndex();
         List<GameSession.ResolutionStep> steps = snapshot == null ? List.of() : snapshot.resolutionSteps();
@@ -2098,6 +2200,15 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         onlineOpponentId = snapshot.opponentId();
         playerDisplayName = snapshot.myCharacterDisplayName();
         opponentDisplayName = snapshot.opponentCharacterDisplayName();
+        if (snapshot.opponentSkinColorHex() != null) {
+            opponentSkinColor = parseHexColor(snapshot.opponentSkinColorHex(), opponentSkinColor);
+        }
+        if (snapshot.opponentOutfitColorHex() != null) {
+            opponentOutfitColor = parseHexColor(snapshot.opponentOutfitColorHex(), opponentOutfitColor);
+        }
+        System.out.println("[MageFightFrame] sync ok: mySkills=" + snapshot.mySkillNames().size()
+                + ", oppSkinHex=" + snapshot.opponentSkinColorHex()
+                + ", oppOutfitHex=" + snapshot.opponentOutfitColorHex());
         syncOnlineSkillCombo(snapshot.mySkillNames());
         return snapshot;
     }
@@ -2107,22 +2218,27 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         if (payload == null) {
             return;
         }
-        onlineTurnPlayerId = String.valueOf(payload.getOrDefault("turnPlayerId", ""));
         onlineWindowDurationSeconds = asInt(payload.get("windowDurationSeconds"), 60);
         int windowIndex = asInt(payload.get("windowIndex"), -1);
         if (windowIndex != onlineWindowIndex) {
             onlineWindowIndex = windowIndex;
             onlineWindowDeadlineMs = System.currentTimeMillis() + onlineWindowDurationSeconds * 1000L;
+            onlineLocalProjectedPlayerPos = null;
+            onlineLocalProjectedWindowIndex = -1;
         }
 
+        onlineMyReady = false;
         onlineOpponentReady = false;
+        String myId = networkClient == null ? null : networkClient.getMyPlayerId();
         Object readyObj = payload.get("readyPlayers");
         if (readyObj instanceof List<?> readyPlayers) {
             for (Object value : readyPlayers) {
                 String readyId = String.valueOf(value);
+                if (myId != null && myId.equals(readyId)) {
+                    onlineMyReady = true;
+                }
                 if (onlineOpponentId != null && onlineOpponentId.equals(readyId)) {
                     onlineOpponentReady = true;
-                    break;
                 }
             }
         }
@@ -2151,14 +2267,77 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         onlineTurnTimer = null;
     }
 
+    private void handlePlayerDisconnected(com.turngame.server.protocol.ResponseMessage msg) {
+        Map<String, Object> payload = msg.payload();
+        String disconnectedPlayerId = String.valueOf(payload.get("playerId"));
+        String myPlayerId = networkClient == null ? null : networkClient.getMyPlayerId();
+        if (myPlayerId == null || myPlayerId.equals(disconnectedPlayerId)) {
+            return;
+        }
+
+        onlinePausedForReconnect = true;
+        onlineReconnectDeadlineEpochMs = asLong(payload.get("reconnectDeadlineEpochMs"), 0L);
+        setActionFeedback("Opponent disconnected. Waiting for reconnect...", true);
+        showReconnectWaitingDialog();
+        refreshUi();
+    }
+
+    private void handleMatchResumed() {
+        if (!onlinePausedForReconnect) {
+            return;
+        }
+        onlinePausedForReconnect = false;
+        onlineReconnectDeadlineEpochMs = 0L;
+        dismissReconnectWaitingDialog();
+        setActionFeedback("Opponent reconnected. Match resumed.", false);
+        refreshUi();
+    }
+
+    private void showReconnectWaitingDialog() {
+        SwingUtilities.invokeLater(() -> {
+            if (onlineWaitingDialog != null && onlineWaitingDialog.isShowing()) {
+                return;
+            }
+            long remainSec = onlineReconnectDeadlineEpochMs <= 0L
+                    ? 60L
+                    : Math.max(0L, (onlineReconnectDeadlineEpochMs - System.currentTimeMillis()) / 1000L);
+            JOptionPane pane = new JOptionPane(
+                    "Opponent disconnected. Waiting... (" + remainSec + "s)",
+                    JOptionPane.INFORMATION_MESSAGE,
+                    JOptionPane.DEFAULT_OPTION,
+                    null,
+                    new Object[]{}
+            );
+            JDialog dialog = pane.createDialog(this, "Waiting...");
+            dialog.setModal(false);
+            dialog.setAlwaysOnTop(true);
+            dialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
+            onlineWaitingDialog = dialog;
+            dialog.setVisible(true);
+        });
+    }
+
+    private void dismissReconnectWaitingDialog() {
+        SwingUtilities.invokeLater(() -> {
+            if (onlineWaitingDialog != null) {
+                onlineWaitingDialog.dispose();
+                onlineWaitingDialog = null;
+            }
+        });
+    }
+
     private String onlineTurnText() {
-        String myId = networkClient == null ? null : networkClient.getMyPlayerId();
-        boolean myTurn = myId != null && myId.equals(onlineTurnPlayerId);
+        if (onlinePausedForReconnect) {
+            long remainingSec = onlineReconnectDeadlineEpochMs <= 0L
+                    ? 0L
+                    : Math.max(0L, (onlineReconnectDeadlineEpochMs - System.currentTimeMillis()) / 1000L);
+            return "Paused: waiting for opponent reconnect (" + remainingSec + "s)";
+        }
         long remainingMs = Math.max(0L, onlineWindowDeadlineMs - System.currentTimeMillis());
         long remainingSec = remainingMs / 1000L;
-        String who = myTurn ? "YOUR TURN" : "OPPONENT TURN";
-        String readyText = onlineOpponentReady ? " | Opponent ended turn" : " | Opponent deciding";
-        return "Turn: " + who + " | " + remainingSec + "s" + readyText;
+        String myReadyText = onlineMyReady ? "YOU READY" : "YOU DECIDING";
+        String oppReadyText = onlineOpponentReady ? "OPP READY" : "OPP DECIDING";
+        return "Window " + Math.max(0, onlineWindowIndex) + " | " + remainingSec + "s | " + myReadyText + " | " + oppReadyText;
     }
 
     private int asInt(Object value, int defaultValue) {
@@ -2170,6 +2349,20 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         }
         try {
             return Integer.parseInt(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return defaultValue;
+        }
+    }
+
+    private long asLong(Object value, long defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number n) {
+            return n.longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
         } catch (NumberFormatException ex) {
             return defaultValue;
         }
@@ -2206,6 +2399,11 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         String winnerId = String.valueOf(msg.payload().get("winnerId"));
         String currentPlayerId = networkClient.getMyPlayerId();
         Map<String, Object> payload = msg.payload();
+        String reason = String.valueOf(payload.get("reason"));
+        String surrenderedPlayerId = String.valueOf(payload.get("surrenderedPlayerId"));
+        System.out.println("[MageFightFrame] GAME_ENDED reason=" + reason + ", winner=" + winnerId
+                + ", me=" + currentPlayerId + ", playbackActive=" + resolutionPlaybackActive
+                + ", alreadyHandled=" + battleReturnHandled.get());
 
         OnlineStateSyncService.SyncSnapshot snapshot = applyOnlineSyncSnapshot(payload);
         int resolvedWindowIndex = snapshot == null ? -1 : snapshot.resolvedWindowIndex();
@@ -2218,10 +2416,44 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             refreshUi();
         }
 
-        if (battleReturnHandled) {
+        if (!battleReturnHandled.compareAndSet(false, true)) {
             return;
         }
-        battleReturnHandled = true;
+
+        if ("PLAYER_SURRENDERED".equalsIgnoreCase(reason)) {
+            boolean iWon;
+            if (surrenderedPlayerId != null && !surrenderedPlayerId.isBlank() && !"null".equalsIgnoreCase(surrenderedPlayerId)) {
+                iWon = !surrenderedPlayerId.equals(currentPlayerId);
+            } else {
+                iWon = winnerId.equals(currentPlayerId);
+            }
+            String message = iWon ? "Opponent surrendered!" : "You surrendered.";
+            log(iWon ? "상대가 기권했습니다." : "기권으로 패배했습니다.");
+            SwingUtilities.invokeLater(() -> {
+                JOptionPane.showMessageDialog(this, message, "Result", JOptionPane.INFORMATION_MESSAGE);
+                if (networkClient != null && networkClient.isConnected()) {
+                    networkClient.disconnect();
+                }
+                dispose();
+            });
+            return;
+        }
+
+        if ("PLAYER_ABANDONED".equalsIgnoreCase(reason)) {
+            boolean iWon = winnerId.equals(currentPlayerId);
+            String message = iWon
+                    ? "Opponent did not return in time. You win!"
+                    : "Reconnection timeout. You lose.";
+            log(iWon ? "상대 미복귀로 승리!" : "미복귀 패배 처리됨.");
+            SwingUtilities.invokeLater(() -> {
+                JOptionPane.showMessageDialog(this, message, "Result", JOptionPane.INFORMATION_MESSAGE);
+                if (networkClient != null && networkClient.isConnected()) {
+                    networkClient.disconnect();
+                }
+                dispose();
+            });
+            return;
+        }
 
         if (winnerId.equals(currentPlayerId)) {
             log("승리!");
@@ -2237,6 +2469,22 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             showResultDialog(pendingOnlineResultText, pendingOnlineResultDisconnect);
             pendingOnlineResultText = null;
             pendingOnlineResultDisconnect = false;
+        } else if (pendingOnlineResultText != null) {
+            // 정산 연출이 끝나면 applyResolutionPhase에서 결과를 띄우지만,
+            // 연출이 어떤 이유로 끝나지 않아도 결과가 반드시 뜨도록 안전망 타이머를 건다.
+            final String safetyText = pendingOnlineResultText;
+            final boolean safetyDisconnect = pendingOnlineResultDisconnect;
+            Timer safetyTimer = new Timer(4000, e -> {
+                if (pendingOnlineResultText != null) {
+                    System.out.println("[MageFightFrame] result safety timer firing (playback did not finish)");
+                    resolutionPlaybackActive = false;
+                    showResultDialog(safetyText, safetyDisconnect);
+                    pendingOnlineResultText = null;
+                    pendingOnlineResultDisconnect = false;
+                }
+            });
+            safetyTimer.setRepeats(false);
+            safetyTimer.start();
         }
     }
 
@@ -2503,6 +2751,10 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         if (resolutionPlaybackActive && playbackPositionByPlayer.containsKey(playerId)) {
             return Optional.ofNullable(playbackPositionByPlayer.get(playerId));
         }
+        // 온라인 대전에서는 move를 눌러도 보드에 즉시 반영하지 않는다.
+        // 예약된 이동의 실제 위치 변화는 end turn 후 정산 연출(playResolutionSteps)에서만
+        // 단계별로 보여준다. (onlineLocalProjectedPlayerPos는 다음 이동 목표 칸을
+        // 계산하기 위한 inputProjectedPosition 용도로만 유지된다.)
         return session.getPlayerPosition(playerId);
     }
 
@@ -2716,6 +2968,16 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
     }
 
     @Override
+    public Color opponentSkinColor() {
+        return opponentSkinColor;
+    }
+
+    @Override
+    public Color opponentOutfitColor() {
+        return opponentOutfitColor;
+    }
+
+    @Override
     public boolean onlineMode() {
         return networkClient != null && networkClient.isConnected();
     }
@@ -2735,5 +2997,12 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
             return fallback;
         }
         return new Color(Integer.parseInt(hex.substring(1), 16));
+    }
+
+    private static String colorToHex(Color color) {
+        if (color == null) {
+            return null;
+        }
+        return String.format("#%06X", color.getRGB() & 0xFFFFFF);
     }
 }

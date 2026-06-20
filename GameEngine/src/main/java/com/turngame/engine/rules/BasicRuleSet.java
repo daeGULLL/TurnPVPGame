@@ -1,10 +1,12 @@
 package com.turngame.engine.rules;
 
+import java.util.Optional;
+
 import com.turngame.domain.PlayerState;
 import com.turngame.domain.defense.DefenseState;
 import com.turngame.domain.map.MapCellPosition;
-import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.domain.skill.SkillEffect;
+import com.turngame.domain.skill.SkillTemplate;
 import com.turngame.engine.GameSession;
 import com.turngame.engine.command.AttackAction;
 import com.turngame.engine.command.DefendAction;
@@ -12,8 +14,6 @@ import com.turngame.engine.command.EndTurnAction;
 import com.turngame.engine.command.GameAction;
 import com.turngame.engine.command.MoveAction;
 import com.turngame.engine.command.UseSkillAction;
-
-import java.util.Optional;
 
 public class BasicRuleSet implements RuleSet {
     private static final int MIN_DAMAGE = 5;
@@ -116,7 +116,26 @@ public class BasicRuleSet implements RuleSet {
                 return false;
             }
 
-            return true;
+            Optional<MapCellPosition> origin = session.getPlayerPosition(move.actorId());
+            if (origin.isEmpty()) {
+                return false;
+            }
+            if (!session.isInsideMap(move.targetCol(), move.targetRow())) {
+                return false;
+            }
+            if (!session.isPassableCell(move.targetCol(), move.targetRow())) {
+                return false;
+            }
+
+            // 큐에 쌓인 이동들을 적용한 뒤의 위치에서 이번 이동을 검증한다.
+            // 이동 "횟수"는 윈도우 에너지(reserveEnergyForQueuedAction)로 제한되며,
+            // moveRange는 한 번의 이동이 갈 수 있는 최대 거리(기본 1칸)만 제한한다.
+            MapCellPosition projected = projectedPositionAfterQueuedMoves(session, move.actorId(), origin.get());
+            int requestedDistance = movementDistance(projected.col(), projected.row(), move.targetCol(), move.targetRow(), actor.diagonalMoveAllowed());
+            if (requestedDistance <= 0) {
+                return false;
+            }
+            return requestedDistance <= actor.moveRange();
         }
 
         return action instanceof DefendAction || action instanceof EndTurnAction;
@@ -216,8 +235,14 @@ public class BasicRuleSet implements RuleSet {
             Optional<MapCellPosition> currentPos = session.getPlayerPosition(move.actorId());
             boolean validMove = currentPos.isPresent()
                     && session.isInsideMap(move.targetCol(), move.targetRow())
-                    && session.isPassableCell(move.targetCol(), move.targetRow())
-                    && actor.canReachCell(currentPos.get().col(), currentPos.get().row(), move.targetCol(), move.targetRow());
+                    && session.isPassableCell(move.targetCol(), move.targetRow());
+
+            if (validMove) {
+                // 정산 시점에는 이동들이 순서대로 적용되므로, 현재 실제 위치 기준으로
+                // 이번 한 번의 이동 거리만 moveRange와 비교한다.
+                int requestedDistance = movementDistance(currentPos.get().col(), currentPos.get().row(), move.targetCol(), move.targetRow(), actor.diagonalMoveAllowed());
+                validMove = requestedDistance > 0 && requestedDistance <= actor.moveRange();
+            }
 
             if (!validMove) {
                 actor.drainEnergy(MOVE_ENERGY_COST);
@@ -304,6 +329,27 @@ public class BasicRuleSet implements RuleSet {
         return actorPos.isPresent()
                 && targetPos.isPresent()
                 && actorPos.get().manhattanDistanceTo(targetPos.get()) == 1;
+    }
+
+    private MapCellPosition projectedPositionAfterQueuedMoves(GameSession session, String actorId, MapCellPosition origin) {
+        int col = origin.col();
+        int row = origin.row();
+        for (GameAction queued : session.getPendingActions(actorId)) {
+            if (queued instanceof MoveAction queuedMove) {
+                col = queuedMove.targetCol();
+                row = queuedMove.targetRow();
+            }
+        }
+        return new MapCellPosition(col, row);
+    }
+
+    private int movementDistance(int fromCol, int fromRow, int toCol, int toRow, boolean diagonalAllowed) {
+        int deltaCol = Math.abs(fromCol - toCol);
+        int deltaRow = Math.abs(fromRow - toRow);
+        if (diagonalAllowed) {
+            return Math.max(deltaCol, deltaRow);
+        }
+        return deltaCol + deltaRow;
     }
 
     @Override
