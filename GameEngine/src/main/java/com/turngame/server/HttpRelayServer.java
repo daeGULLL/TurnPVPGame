@@ -1109,7 +1109,16 @@ public class HttpRelayServer {
                 p.put("characterTitle", character.title());
                 p.put("attackBonus", character.attackBonus());
             }
-            p.put("skills", match.playerSkills.getOrDefault(playerId, List.of()));
+            List<SkillTemplate> playerSkills = match.playerSkills.getOrDefault(playerId, List.of());
+            p.put("skills", playerSkills);
+            // 스킬별 남은 쿨다운(턴)도 함께 보낸다. 클라이언트 Skills 탭이 온라인에서도
+            // 봇전처럼 쿨다운을 표시할 수 있게 한다.
+            Map<String, Object> cooldownsPayload = new HashMap<>();
+            for (SkillTemplate skill : playerSkills) {
+                cooldownsPayload.put(skill.name(),
+                        match.skillCooldowns.getOrDefault(cooldownKey(match.matchId, playerId, skill.name()), 0));
+            }
+            p.put("skillCooldowns", cooldownsPayload);
             playersPayload.add(p);
         });
         payload.put("players", playersPayload);

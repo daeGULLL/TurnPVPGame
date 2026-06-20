@@ -2052,6 +2052,15 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
         this.onlineLocalProjectedPlayerPos = null;
         this.onlineLocalProjectedWindowIndex = -1;
 
+        // 온라인에서도 Skills 탭/콤보가 내 스킬과 쿨다운을 표시하도록 playerSpec과
+        // 쿨다운 맵을 초기화한다. (오프라인의 startNewMatch와 동일한 역할.)
+        this.playerSpec = presetFactory.createPlayerSpec(currentArchetype, progress);
+        this.specs.put(PLAYER_ID, this.playerSpec);
+        Map<String, Integer> playerCooldowns = this.cooldowns.computeIfAbsent(PLAYER_ID, k -> new HashMap<>());
+        for (SkillTemplate skill : this.playerSpec.skills()) {
+            playerCooldowns.putIfAbsent(skill.name(), 0);
+        }
+
         // 매칭 상태 변경 핸들링
         networkClient.setOnMatchStateChanged(state -> {
             switch (state) {
@@ -2210,6 +2219,12 @@ public class MageFightFrame extends JFrame implements BattleViewPanel.Host {
                 + ", oppSkinHex=" + snapshot.opponentSkinColorHex()
                 + ", oppOutfitHex=" + snapshot.opponentOutfitColorHex());
         syncOnlineSkillCombo(snapshot.mySkillNames());
+        // 서버가 보낸 내 스킬 쿨다운을 반영한다 (Skills 탭이 봇전처럼 남은 쿨다운 표시).
+        if (snapshot.myCooldowns() != null && !snapshot.myCooldowns().isEmpty()) {
+            Map<String, Integer> cd = cooldowns.computeIfAbsent(PLAYER_ID, k -> new HashMap<>());
+            cd.clear();
+            cd.putAll(snapshot.myCooldowns());
+        }
         return snapshot;
     }
 

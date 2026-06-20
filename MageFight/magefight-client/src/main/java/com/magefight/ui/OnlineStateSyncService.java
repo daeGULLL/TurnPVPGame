@@ -38,7 +38,8 @@ final class OnlineStateSyncService {
             List<GameSession.ResolutionStep> resolutionSteps,
             String turnPlayerId,
             String opponentSkinColorHex,
-            String opponentOutfitColorHex
+            String opponentOutfitColorHex,
+            Map<String, Integer> myCooldowns
     ) {}
 
     @SuppressWarnings("unchecked")
@@ -107,6 +108,7 @@ final class OnlineStateSyncService {
         String turnPlayerId = String.valueOf(payload.get("turnPlayerId"));
         String opponentSkinColorHex = asHexColor(opponent.get("skinColorHex"));
         String opponentOutfitColorHex = asHexColor(opponent.get("outfitColorHex"));
+        Map<String, Integer> myCooldowns = parseCooldowns(me.get("skillCooldowns"));
 
         return new SyncSnapshot(
                 snapshot,
@@ -119,7 +121,8 @@ final class OnlineStateSyncService {
                 steps,
                 turnPlayerId,
                 opponentSkinColorHex,
-                opponentOutfitColorHex
+                opponentOutfitColorHex,
+                myCooldowns
         );
     }
 
@@ -391,6 +394,20 @@ final class OnlineStateSyncService {
         if (obj == null) return null;
         String hex = String.valueOf(obj).trim();
         return hex.matches("^#[0-9a-fA-F]{6}$") ? hex : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Integer> parseCooldowns(Object obj) {
+        if (!(obj instanceof Map<?, ?> rawMap)) {
+            return Map.of();
+        }
+        Map<String, Integer> result = new HashMap<>();
+        for (Map.Entry<String, Object> entry : ((Map<String, Object>) rawMap).entrySet()) {
+            if (entry.getKey() != null) {
+                result.put(entry.getKey(), asInt(entry.getValue(), 0));
+            }
+        }
+        return result;
     }
 
     private double asDouble(Object obj, double defaultValue) {
